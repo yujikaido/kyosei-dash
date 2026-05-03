@@ -1,0 +1,5 @@
+Windows Registry Editor Version 5.00
+
+; Kyosei Dash — uninstall the rdp:// URL handler
+
+[-HKEY_CLASSES_ROOT\rdp]

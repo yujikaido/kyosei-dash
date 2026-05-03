@@ -1,0 +1,24 @@
+Windows Registry Editor Version 5.00
+
+; Kyosei Dash — Windows URL handler for rdp:// links
+; Double-click this file (UAC will prompt) to register, then RDP buttons in
+; Kyosei Dash will launch mstsc.exe directly.
+;
+; Strips the "rdp://" prefix and any trailing slash, then runs:
+;     mstsc.exe /v:<host[:port]>
+;
+; To uninstall, run rdp-handler-uninstall.reg
+
+[HKEY_CLASSES_ROOT\rdp]
+@="URL:Remote Desktop Protocol"
+"URL Protocol"=""
+
+[HKEY_CLASSES_ROOT\rdp\DefaultIcon]
+@="\"%SystemRoot%\\System32\\mstsc.exe\""
+
+[HKEY_CLASSES_ROOT\rdp\shell]
+
+[HKEY_CLASSES_ROOT\rdp\shell\open]
+
+[HKEY_CLASSES_ROOT\rdp\shell\open\command]
+@="cmd /v:on /c \"set u=%1&set u=!u:rdp://=!&set u=!u:/=!&start mstsc /v:!u!\""

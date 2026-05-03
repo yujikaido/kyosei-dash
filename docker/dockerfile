@@ -1,0 +1,86 @@
+# ============================================================================
+# Kyosei Dash — self-contained Dockerfile
+#
+# Builds from this repo's source only. Does NOT pull any louislam/uptime-kuma
+# base image, so there is no pre-baked Kuma code to leak through.
+#
+# Base: node:22-bookworm-slim + OS packages we actually need.
+# ============================================================================
+
+############################################
+# Stage 1 — Build
+############################################
+FROM node:22-bookworm-slim AS build
+WORKDIR /app
+
+# OS packages needed at BUILD time (compilers/tools for native npm deps)
+RUN apt-get update && \
+    apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        python3 \
+        make \
+        g++ \
+        curl && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
+
+# Install all deps (dev included — we need Vite for the frontend build)
+COPY .npmrc package.json package-lock.json ./
+RUN npm ci
+
+# Copy full source and build the Vue frontend to ./dist
+COPY . .
+RUN npm run build
+
+# Drop devDeps to slim node_modules for the release image
+RUN npm prune --omit=dev
+
+############################################
+# Stage 2 — Release
+############################################
+FROM node:22-bookworm-slim AS release
+WORKDIR /app
+
+LABEL org.opencontainers.image.source="https://github.com/yujikaido/kyosei-dash"
+LABEL org.opencontainers.image.title="Kyosei Dash"
+LABEL org.opencontainers.image.description="Symbiosis for monitoring — Uptime Kuma engine + PRTG data + click-to-connect"
+
+# OS packages needed at RUNTIME
+# sqlite3        = SQLite CLI for debugging, libs ship with @louislam/sqlite3
+# iputils-ping   = ping monitor
+# dumb-init      = PID-1 signal handling
+# ca-certificates = up-to-date TLS roots for HTTP monitors
+# curl           = healthcheck + general debugging
+# util-linux     = setpriv, used by entrypoint when running as non-root
+RUN apt-get update && \
+    apt-get install --yes --no-install-recommends \
+        sqlite3 \
+        iputils-ping \
+        dumb-init \
+        ca-certificates \
+        curl \
+        util-linux && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get --yes autoremove
+
+ENV UPTIME_KUMA_IS_CONTAINER=1
+ENV NODE_ENV=production
+
+# Copy the built app (frontend dist + backend source + pruned node_modules)
+COPY --chown=node:node --from=build /app /app
+
+# Runtime data volume
+RUN mkdir -p /app/data && chown -R node:node /app/data
+VOLUME ["/app/data"]
+
+# Run as root by default (matches Kuma upstream behavior). The container
+# writes to /app/data which is bind-mounted from the host; running as root
+# avoids uid mismatches when the host dir was created by root.
+EXPOSE 3001
+
+HEALTHCHECK --interval=60s --timeout=15s --start-period=30s --retries=5 \
+    CMD curl --silent --fail http://127.0.0.1:3001/ > /dev/null || exit 1
+
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+CMD ["node", "server/server.js"]
