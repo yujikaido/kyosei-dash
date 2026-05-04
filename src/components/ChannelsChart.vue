@@ -222,5 +222,12 @@ export default {
 </script>
 
 <style scoped>
-div :deep(canvas) { height: 260px !important; }
+div :deep(canvas) {
+    height: 260px !important;
+    /* Kyosei Dash — disable the browser's default pinch-zoom-the-whole-page
+       gesture inside the chart so chartjs-plugin-zoom can handle pinch
+       itself. pan-y still lets the user scroll the page vertically when
+       their finger touches the chart accidentally. */
+    touch-action: pan-y;
+}
 </style>
