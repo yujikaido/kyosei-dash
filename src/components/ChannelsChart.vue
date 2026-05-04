@@ -231,6 +231,18 @@ export default {
             this.$root.getSocket().emit("getChannelHistory", this.monitorId, this.hours, (res) => {
                 if (res && res.ok) {
                     this.points = res.points || [];
+                    // Kyosei Dash temp debug — remove once 7d truncation is fixed
+                    /* eslint-disable no-console */
+                    if (this.hours >= 24) {
+                        const len = this.points.length;
+                        const oldest = len ? this.points[0].t : "(none)";
+                        const newest = len ? this.points[len - 1].t : "(none)";
+                        console.log(`[KYOSEI] monitor=${this.monitorId} hours=${this.hours} got ${len} points; oldest=${oldest} newest=${newest}`);
+                    }
+                    /* eslint-enable no-console */
+                } else {
+                    /* eslint-disable-next-line no-console */
+                    console.error("[KYOSEI] getChannelHistory failed:", res);
                 }
             });
         },
