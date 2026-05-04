@@ -16,8 +16,17 @@ const { log } = require("../../src/util");
  */
 /**
  * Kyosei Dash — fetch historical channel data straight from PRTG.
- * Uses the sensor's PRTG-server credentials and asks for the right
- * aggregation level so we don't pull 100k+ raw points for a 7d view.
+ *
+ * PRTG's /api/historicdata.json response varies across versions/configs:
+ *   v1 (newer): { histdata: [{ datetime, "Traffic In": "...", "Traffic In(RAW)": 150000, ... }] }
+ *   v2 (older): { histdata: [{ datetime, "Traffic In": "...", "Traffic In_raw": 150000, ... }] }
+ *   v3 (some):  { histdata: [{ datetime, "Traffic In": 150000, ... }] }   -- already numeric
+ * Plus metadata keys (datetime, datetime_raw, coverage, coverage_raw).
+ *
+ * Strategy: any key whose value is a finite number (or whose `<key>(RAW)` /
+ * `<key>_raw` companion is a finite number) becomes a channel. Strip the
+ * known metadata. If no channels survive, return [] so the caller falls
+ * back to local heartbeat data.
  *
  * @param {object} monitor monitor row with prtg_server_id + prtg_sensor_id
  * @param {number} hours window in hours
@@ -39,47 +48,63 @@ async function fetchPrtgHistory(monitor, hours) {
     const endDate = new Date();
     const startDate = new Date(endDate.getTime() - hours * 60 * 60 * 1000);
 
-    // Pick aggregation: < 24h = raw scan, < 7d = 5min avg, else 60min avg.
-    // Keeps response size reasonable and chart performant.
+    // Pick aggregation: < 24h raw, < 7d 5-min avg, else 1-hour avg.
     let avg = 0;
-    if (hours > 24 && hours <= 168) avg = 300;       // 5 min
-    else if (hours > 168) avg = 3600;                // 1 hour
+    if (hours > 24 && hours <= 168) avg = 300;
+    else if (hours > 168) avg = 3600;
 
     const resp = await client.getHistory(monitor.prtg_sensor_id, startDate, endDate, avg);
     const rows = (resp && resp.histdata) || [];
+    if (!rows.length) return [];
 
-    return rows.map((r) => {
-        // PRTG returns datetime in its own local TZ as a string. We want UTC
-        // ISO so the browser parses it correctly. PRTG also gives a numeric
-        // datetime_raw on each row for easy parsing.
+    // Log the first raw row once so we can see PRTG's actual response shape
+    // if the parser misses something. Logged at debug level only.
+    log.debug("channels", `PRTG history sample row (sensor ${monitor.prtg_sensor_id}): ${JSON.stringify(rows[0])}`);
+
+    const META_KEYS = new Set(["datetime", "datetime_raw", "coverage", "coverage_raw"]);
+    const RAW_SUFFIX_RE = /^(.+?)(?:\(RAW\)|_raw)$/i;
+
+    const points = rows.map((r) => {
+        // Time: prefer datetime_raw (OLE Automation date — days since 1899-12-30),
+        // fall back to text parse of `datetime`.
         let t;
-        if (r.datetime_raw) {
-            // PRTG datetime_raw is OLE Automation date — days since 1899-12-30.
-            // Convert: ms = (oleDate - 25569) * 86400 * 1000.
+        if (r.datetime_raw !== undefined && r.datetime_raw !== null && !isNaN(Number(r.datetime_raw))) {
             const oleDays = Number(r.datetime_raw);
             const ms = (oleDays - 25569) * 86400 * 1000;
             t = new Date(ms).toISOString();
         } else if (r.datetime) {
-            // Fallback to text parse
-            const parsed = Date.parse(String(r.datetime).replace(/[‐–]/g, "-"));
-            t = isNaN(parsed) ? new Date().toISOString() : new Date(parsed).toISOString();
+            const parsed = Date.parse(String(r.datetime));
+            t = isNaN(parsed) ? null : new Date(parsed).toISOString();
         } else {
-            t = new Date().toISOString();
+            t = null;
         }
+        if (!t) return null;
 
-        // Strip PRTG's metadata keys ("datetime", "datetime_raw", "coverage_raw" etc.);
-        // anything left that's numeric is a channel value.
+        // Build channels:
+        //   Pass 1: pick up `<key>(RAW)` / `<key>_raw` numeric companions.
+        //   Pass 2: for any plain key not yet captured whose value is numeric, take it.
         const channels = {};
         for (const [ k, v ] of Object.entries(r)) {
-            if (k.startsWith("datetime") || k === "coverage" || k === "coverage_raw") continue;
-            if (k.endsWith("_raw")) {
-                const baseKey = k.slice(0, -4);
+            if (META_KEYS.has(k)) continue;
+            const m = RAW_SUFFIX_RE.exec(k);
+            if (m) {
                 const num = Number(v);
-                if (!isNaN(num)) channels[baseKey] = num;
+                if (!isNaN(num) && isFinite(num)) channels[m[1].trim()] = num;
+            }
+        }
+        for (const [ k, v ] of Object.entries(r)) {
+            if (META_KEYS.has(k)) continue;
+            if (RAW_SUFFIX_RE.test(k)) continue;
+            if (channels[k] !== undefined) continue;
+            const num = Number(v);
+            if (!isNaN(num) && isFinite(num) && typeof v !== "boolean") {
+                channels[k] = num;
             }
         }
         return { t, channels };
-    }).filter((p) => Object.keys(p.channels).length > 0);
+    }).filter((p) => p && Object.keys(p.channels).length > 0);
+
+    return points;
 }
 
 module.exports.channelsSocketHandler = (socket) => {
@@ -88,14 +113,26 @@ module.exports.channelsSocketHandler = (socket) => {
             checkLogin(socket);
             const h = Math.max(1, Math.min(Number(hours) || 24, 720));
 
-            // First, see if this is a PRTG monitor we can query directly
+            // First, see if this is a PRTG monitor we can query directly,
+            // and if the response actually yields multiple channels (single-
+            // channel/"value" responses indicate the parser missed the real
+            // channel keys — fall back to local heartbeat data instead).
             const monitor = await R.findOne("monitor", "id = ?", [ monitorID ]);
             if (monitor && monitor.type === "prtg" && monitor.prtg_server_id && monitor.prtg_sensor_id) {
                 try {
                     const points = await fetchPrtgHistory(monitor, h);
                     if (points && points.length) {
-                        callback({ ok: true, points, source: "prtg" });
-                        return;
+                        // Sanity check: PRTG traffic sensors have multiple
+                        // named channels. If we only got 1 generic "value"
+                        // key, the response shape is one we don't handle —
+                        // fall through to local instead of showing a broken chart.
+                        const sampleKeys = Object.keys(points[0].channels);
+                        const looksGeneric = sampleKeys.length === 1 && /^value$/i.test(sampleKeys[0]);
+                        if (!looksGeneric) {
+                            callback({ ok: true, points, source: "prtg" });
+                            return;
+                        }
+                        log.warn("channels", `PRTG response had only generic 'value' key for monitor ${monitorID} — falling back to local heartbeat data`);
                     }
                 } catch (e) {
                     log.warn("channels", `PRTG history fetch failed for monitor ${monitorID}, falling back to local: ${e.message}`);
