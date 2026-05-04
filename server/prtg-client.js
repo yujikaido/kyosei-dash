@@ -113,6 +113,46 @@ function createPrtgClient(config) {
                 output: "json",
             });
         },
+        /**
+         * Kyosei Dash — fetch historical data as CSV. Unlike historicdata.json
+         * (which collapses to the sensor's primary channel as 'value'), the
+         * CSV endpoint returns one column per channel — the only PRTG API
+         * that gives you all channels of a multi-channel sensor in one call.
+         *
+         * @param {number|string} sensorId PRTG sensor objid
+         * @param {Date} startDate beginning of window
+         * @param {Date} endDate end of window
+         * @param {number} avgSeconds aggregation window in seconds (0 = raw)
+         * @returns {Promise<string>} raw CSV text
+         */
+        async getHistoryCsv(sensorId, startDate, endDate, avgSeconds = 0) {
+            const fmt = (d) => {
+                const p = (n) => String(n).padStart(2, "0");
+                return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+            };
+            const url = `${baseUrl}/api/historicdata.csv`;
+            try {
+                const response = await axios.get(url, {
+                    params: {
+                        ...authParams(),
+                        id: sensorId,
+                        sdate: fmt(startDate),
+                        edate: fmt(endDate),
+                        avg: avgSeconds,
+                    },
+                    httpsAgent: agent,
+                    timeout: 30000,
+                    responseType: "text",
+                    transformResponse: [(d) => d],   // raw text, no auto-parse
+                });
+                return String(response.data || "");
+            } catch (err) {
+                if (err.response) {
+                    throw new Error(`PRTG ${err.response.status}: ${err.response.statusText}`);
+                }
+                throw new Error(err.message || "PRTG CSV history error");
+            }
+        },
     };
 }
 

@@ -55,60 +55,135 @@ async function fetchPrtgHistory(monitor, hours) {
 
     log.info("channels", `[KYOSEI-PRTG-FETCH] sensor=${monitor.prtg_sensor_id} hours=${hours} avg=${avg}s start=${startDate.toISOString()} end=${endDate.toISOString()}`);
 
-    const resp = await client.getHistory(monitor.prtg_sensor_id, startDate, endDate, avg);
-    const rows = (resp && resp.histdata) || [];
-    log.info("channels", `[KYOSEI-PRTG-FETCH] sensor=${monitor.prtg_sensor_id} got ${rows.length} rows from PRTG`);
-    if (!rows.length) return [];
-
-    // Log the first raw row at INFO so we can see PRTG's actual response
-    // shape if the parser misses something
-    log.info("channels", `[KYOSEI-PRTG-FETCH] sample row keys: ${Object.keys(rows[0]).join(", ")}`);
-    log.info("channels", `[KYOSEI-PRTG-FETCH] sample row JSON: ${JSON.stringify(rows[0])}`);
-
-    const META_KEYS = new Set(["datetime", "datetime_raw", "coverage", "coverage_raw"]);
-    const RAW_SUFFIX_RE = /^(.+?)(?:\(RAW\)|_raw)$/i;
-
-    const points = rows.map((r) => {
-        // Time: prefer datetime_raw (OLE Automation date — days since 1899-12-30),
-        // fall back to text parse of `datetime`.
-        let t;
-        if (r.datetime_raw !== undefined && r.datetime_raw !== null && !isNaN(Number(r.datetime_raw))) {
-            const oleDays = Number(r.datetime_raw);
-            const ms = (oleDays - 25569) * 86400 * 1000;
-            t = new Date(ms).toISOString();
-        } else if (r.datetime) {
-            const parsed = Date.parse(String(r.datetime));
-            t = isNaN(parsed) ? null : new Date(parsed).toISOString();
-        } else {
-            t = null;
-        }
-        if (!t) return null;
-
-        // Build channels:
-        //   Pass 1: pick up `<key>(RAW)` / `<key>_raw` numeric companions.
-        //   Pass 2: for any plain key not yet captured whose value is numeric, take it.
-        const channels = {};
-        for (const [ k, v ] of Object.entries(r)) {
-            if (META_KEYS.has(k)) continue;
-            const m = RAW_SUFFIX_RE.exec(k);
-            if (m) {
-                const num = Number(v);
-                if (!isNaN(num) && isFinite(num)) channels[m[1].trim()] = num;
-            }
-        }
-        for (const [ k, v ] of Object.entries(r)) {
-            if (META_KEYS.has(k)) continue;
-            if (RAW_SUFFIX_RE.test(k)) continue;
-            if (channels[k] !== undefined) continue;
-            const num = Number(v);
-            if (!isNaN(num) && isFinite(num) && typeof v !== "boolean") {
-                channels[k] = num;
-            }
-        }
-        return { t, channels };
-    }).filter((p) => p && Object.keys(p.channels).length > 0);
-
+    // Use CSV endpoint — historicdata.json only returns the primary channel.
+    // CSV returns one column per channel, which is what we need for traffic
+    // sensors with Traffic In / Out / Total / Downtime.
+    const csv = await client.getHistoryCsv(monitor.prtg_sensor_id, startDate, endDate, avg);
+    const points = parsePrtgHistoryCsv(csv);
+    log.info("channels", `[KYOSEI-PRTG-FETCH] sensor=${monitor.prtg_sensor_id} parsed ${points.length} CSV points`);
+    if (points.length > 0) {
+        log.info("channels", `[KYOSEI-PRTG-FETCH] sample channels: ${Object.keys(points[0].channels).join(", ")}`);
+    }
     return points;
+}
+
+/**
+ * Parse PRTG's /api/historicdata.csv response into points.
+ *
+ * Sample header (excerpt; first row may be 'sep=,'):
+ *   "Date Time","Traffic In(SPEED) (kbit/s)","Traffic In(SPEED)(RAW)","Traffic Out(SPEED) (kbit/s)","Traffic Out(SPEED)(RAW)","Total - Avg (kbit/s)","Total - Avg(RAW)","Downtime (%)","Downtime(RAW)","Coverage (%)","Coverage(RAW)"
+ *
+ * For each channel PRTG emits two columns: a display string ("5,380 kbit/s")
+ * and a raw numeric value. We prefer the RAW column. Channel name = display
+ * column header without the trailing unit/aggregation. Coverage is metadata.
+ *
+ * @param {string} csv raw CSV text
+ * @returns {Array<{t: string, channels: object}>} parsed points
+ */
+function parsePrtgHistoryCsv(csv) {
+    const lines = csv.split(/\r?\n/).filter((ln) => ln.length > 0);
+    if (!lines.length) return [];
+    // Skip optional Excel separator hint
+    if (/^sep=/i.test(lines[0])) lines.shift();
+    if (lines.length < 2) return [];
+
+    const header = parseCsvRow(lines[0]);
+    // Identify columns. Convention: a numeric "raw" companion appears
+    // either named "<channel>(RAW)" or "<channel>(SPEED)(RAW)" or with
+    // suffix "_raw". The display column is the same name minus that suffix.
+    // We map raw-column-index -> friendly channel name.
+    const dateIdx = header.findIndex((h) => /date/i.test(h) && /time/i.test(h));
+    const channelCols = []; // { idx, name }
+    const skipSet = new Set();
+    for (let i = 0; i < header.length; i++) {
+        if (i === dateIdx) continue;
+        const h = header[i];
+        if (/coverage/i.test(h)) { skipSet.add(i); continue; }
+        const rawMatch = /^(.+?)\s*(?:\(RAW\)|_raw)\s*$/i.exec(h);
+        if (rawMatch) {
+            // Strip "(SPEED)" / " - Avg" / " - Sum" / " - Min" / " - Max"
+            // tags from the channel name to get the friendly label
+            let name = rawMatch[1]
+                .replace(/\(SPEED\)/gi, "")
+                .replace(/\s*-\s*(Avg|Sum|Min|Max)\b/gi, "")
+                .trim();
+            channelCols.push({ idx: i, name });
+            skipSet.add(i);
+        }
+    }
+    // For columns that have NO raw companion but are numeric display values,
+    // accept them too. Detect by sampling the first data row.
+    if (channelCols.length === 0 && lines.length > 1) {
+        const sample = parseCsvRow(lines[1]);
+        for (let i = 0; i < header.length; i++) {
+            if (i === dateIdx || skipSet.has(i)) continue;
+            const num = Number(String(sample[i] ?? "").replace(/[,"\s]/g, "").replace(/[a-zA-Z%/]+$/, ""));
+            if (!isNaN(num) && isFinite(num)) {
+                let name = header[i]
+                    .replace(/\([^)]*\)/g, "")
+                    .replace(/\s*-\s*(Avg|Sum|Min|Max)\b/gi, "")
+                    .trim();
+                channelCols.push({ idx: i, name, fromDisplay: true });
+            }
+        }
+    }
+    if (channelCols.length === 0) return [];
+
+    const points = [];
+    for (let r = 1; r < lines.length; r++) {
+        const cells = parseCsvRow(lines[r]);
+        if (!cells.length) continue;
+        const dateStr = cells[dateIdx];
+        if (!dateStr) continue;
+        // PRTG CSV date is local-time text e.g. "5/3/2026 10:52:54 AM" or
+        // "4/27/2026 10:50:00 AM - 10:55:00 AM" for aggregated rows.
+        // Take the start of the range for aggregated rows.
+        const cleanDate = String(dateStr).split(" - ")[0].trim();
+        const ms = Date.parse(cleanDate);
+        if (isNaN(ms)) continue;
+
+        const channels = {};
+        for (const col of channelCols) {
+            const cell = cells[col.idx];
+            if (cell === undefined || cell === null || cell === "") continue;
+            // Strip thousands separators and trailing units before Number()
+            const cleaned = String(cell).replace(/,/g, "").replace(/[a-zA-Z%/\s]+$/, "");
+            const num = Number(cleaned);
+            if (!isNaN(num) && isFinite(num)) channels[col.name] = num;
+        }
+        if (Object.keys(channels).length > 0) {
+            points.push({ t: new Date(ms).toISOString(), channels });
+        }
+    }
+    return points;
+}
+
+/**
+ * Minimal CSV row parser — handles quoted fields with embedded commas
+ * and "" escapes. Sufficient for PRTG's well-formed historicdata.csv.
+ *
+ * @param {string} line one CSV line
+ * @returns {string[]} cells
+ */
+function parseCsvRow(line) {
+    const out = [];
+    let cur = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (inQuotes) {
+            if (c === '"') {
+                if (line[i + 1] === '"') { cur += '"'; i++; }
+                else inQuotes = false;
+            } else cur += c;
+        } else {
+            if (c === '"') inQuotes = true;
+            else if (c === ",") { out.push(cur); cur = ""; }
+            else cur += c;
+        }
+    }
+    out.push(cur);
+    return out.map((s) => s.trim());
 }
 
 module.exports.channelsSocketHandler = (socket) => {
