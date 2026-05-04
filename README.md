@@ -14,11 +14,14 @@ Kyosei Dash (共生 — *kyōsei*, "living together") is a self-hosted monitorin
 - **PRTG** — SNMP bandwidth, ping quality, hardware, WMI, NetFlow, vendor sensors, any custom PRTG probe
 - **Kyosei Dash** — click-to-connect launchers (RDP, SSH, HTTP/HTTPS, Custom URL) on every monitor, a capability-aware PRTG importer, JSON backup/restore, and bulk operations across selected monitors
 
+<img width="1504" height="704" alt="kyosei-dash" src="https://github.com/user-attachments/assets/cd198279-f340-409b-91b0-840640cc0fb5" />
+
+
 ---
 
 ## 🚀 Installation
 
-### Option 1: Proxmox LXC (Automated — recommended)
+### Option 1: Proxmox LXC (Automated — recommended) (This only installs Kyosei-Dash PRTG is a sepereate intall and setup)
 
 For anyone running Proxmox VE, deploy a fully configured **Debian 13 LXC** running Docker with a single command on your Proxmox host shell:
 
