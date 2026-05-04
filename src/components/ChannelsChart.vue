@@ -55,24 +55,41 @@ export default {
             return [ ...keys ].sort();
         },
         series() {
-            // Kyosei Dash — break the line at large time gaps so an old orphan
-            // heartbeat doesn't draw a flat 5-day connector to the recent data.
-            // Threshold: 30 minutes between consecutive points = "gap".
-            const GAP_MS = 30 * 60 * 1000;
+            // Kyosei Dash — break the line at REAL gaps in data (sensor was
+            // down or paused) but not at normal polling intervals. PRTG
+            // bandwidth sensors can poll every 30s up to 60min depending on
+            // configuration. Compute the median interval per series and
+            // treat anything more than 5x the median as a true gap.
             return this.channelKeys.map((k, i) => {
-                const data = [];
-                let prevT = null;
+                // First pass: collect raw points + the time deltas between them
+                const raw = [];
                 for (const p of this.points) {
                     const v = typeof p.channels[k] === "number" ? p.channels[k] : null;
                     if (v === null) continue;
-                    const t = new Date(p.t);
-                    if (prevT !== null && t - prevT > GAP_MS) {
-                        // Insert null between distant points to break the line
+                    raw.push({ t: new Date(p.t), v });
+                }
+
+                // Find median delta (gap detection threshold)
+                const deltas = [];
+                for (let n = 1; n < raw.length; n++) {
+                    deltas.push(raw[n].t - raw[n - 1].t);
+                }
+                deltas.sort((a, b) => a - b);
+                const median = deltas.length ? deltas[Math.floor(deltas.length / 2)] : 0;
+                // Floor at 5 minutes so noisy single-sample sensors don't break their own line
+                const gapMs = Math.max(median * 5, 5 * 60 * 1000);
+
+                // Second pass: build chart data with nulls inserted at real gaps
+                const data = [];
+                let prevT = null;
+                for (const r of raw) {
+                    if (prevT !== null && r.t - prevT > gapMs) {
                         data.push({ x: new Date(prevT.getTime() + 1), y: null });
                     }
-                    data.push({ x: t, y: v });
-                    prevT = t;
+                    data.push({ x: r.t, y: r.v });
+                    prevT = r.t;
                 }
+
                 return {
                     label: k,
                     borderColor: COLORS[i % COLORS.length],
