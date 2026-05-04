@@ -91,6 +91,28 @@ function createPrtgClient(config) {
         async getStatus() {
             return prtgGet("/api/getstatus.json", {});
         },
+        /**
+         * Kyosei Dash — fetch historical channel data for a sensor.
+         * Date format PRTG expects: "YYYY-MM-DD-HH-MM-SS" (in PRTG's local TZ).
+         * @param {number|string} sensorId PRTG sensor objid
+         * @param {Date} startDate beginning of window
+         * @param {Date} endDate end of window
+         * @param {number} avgSeconds aggregation window in seconds (0 = raw scan)
+         * @returns {Promise<object>} PRTG historicdata response
+         */
+        async getHistory(sensorId, startDate, endDate, avgSeconds = 0) {
+            const fmt = (d) => {
+                const p = (n) => String(n).padStart(2, "0");
+                return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+            };
+            return prtgGet("/api/historicdata.json", {
+                id: sensorId,
+                sdate: fmt(startDate),
+                edate: fmt(endDate),
+                avg: avgSeconds,
+                output: "json",
+            });
+        },
     };
 }
 

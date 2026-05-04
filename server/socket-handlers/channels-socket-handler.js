@@ -1,19 +1,109 @@
 const { checkLogin } = require("../util-server");
 const { R } = require("redbean-node");
+const { createPrtgClient } = require("../prtg-client");
+const { log } = require("../../src/util");
 
 /**
- * Kyosei Dash — fetch recent heartbeat channel history for a monitor.
+ * Kyosei Dash — fetch channel history for a monitor.
+ *
+ * For PRTG-type monitors, query PRTG's historicdata.json directly so the
+ * chart can show months/years of data, not just whatever Kuma's heartbeat
+ * trim has retained locally. Falls back to local heartbeat rows for any
+ * non-PRTG monitor or if the PRTG fetch fails.
+ *
  * @param {Socket} socket Socket.io instance
  * @returns {void}
  */
+/**
+ * Kyosei Dash — fetch historical channel data straight from PRTG.
+ * Uses the sensor's PRTG-server credentials and asks for the right
+ * aggregation level so we don't pull 100k+ raw points for a 7d view.
+ *
+ * @param {object} monitor monitor row with prtg_server_id + prtg_sensor_id
+ * @param {number} hours window in hours
+ * @returns {Promise<Array>} array of { t, channels } points
+ */
+async function fetchPrtgHistory(monitor, hours) {
+    const srv = await R.findOne("prtg_server", "id = ?", [ monitor.prtg_server_id ]);
+    if (!srv) throw new Error("PRTG server not found");
+
+    const client = createPrtgClient({
+        url: srv.url,
+        username: srv.username,
+        passhash: srv.passhash,
+        apiToken: srv.api_token,
+        useApiToken: !!srv.use_api_token,
+        ignoreSsl: !!srv.ignore_ssl,
+    });
+
+    const endDate = new Date();
+    const startDate = new Date(endDate.getTime() - hours * 60 * 60 * 1000);
+
+    // Pick aggregation: < 24h = raw scan, < 7d = 5min avg, else 60min avg.
+    // Keeps response size reasonable and chart performant.
+    let avg = 0;
+    if (hours > 24 && hours <= 168) avg = 300;       // 5 min
+    else if (hours > 168) avg = 3600;                // 1 hour
+
+    const resp = await client.getHistory(monitor.prtg_sensor_id, startDate, endDate, avg);
+    const rows = (resp && resp.histdata) || [];
+
+    return rows.map((r) => {
+        // PRTG returns datetime in its own local TZ as a string. We want UTC
+        // ISO so the browser parses it correctly. PRTG also gives a numeric
+        // datetime_raw on each row for easy parsing.
+        let t;
+        if (r.datetime_raw) {
+            // PRTG datetime_raw is OLE Automation date — days since 1899-12-30.
+            // Convert: ms = (oleDate - 25569) * 86400 * 1000.
+            const oleDays = Number(r.datetime_raw);
+            const ms = (oleDays - 25569) * 86400 * 1000;
+            t = new Date(ms).toISOString();
+        } else if (r.datetime) {
+            // Fallback to text parse
+            const parsed = Date.parse(String(r.datetime).replace(/[‐–]/g, "-"));
+            t = isNaN(parsed) ? new Date().toISOString() : new Date(parsed).toISOString();
+        } else {
+            t = new Date().toISOString();
+        }
+
+        // Strip PRTG's metadata keys ("datetime", "datetime_raw", "coverage_raw" etc.);
+        // anything left that's numeric is a channel value.
+        const channels = {};
+        for (const [ k, v ] of Object.entries(r)) {
+            if (k.startsWith("datetime") || k === "coverage" || k === "coverage_raw") continue;
+            if (k.endsWith("_raw")) {
+                const baseKey = k.slice(0, -4);
+                const num = Number(v);
+                if (!isNaN(num)) channels[baseKey] = num;
+            }
+        }
+        return { t, channels };
+    }).filter((p) => Object.keys(p.channels).length > 0);
+}
+
 module.exports.channelsSocketHandler = (socket) => {
     socket.on("getChannelHistory", async (monitorID, hours, callback) => {
         try {
             checkLogin(socket);
             const h = Math.max(1, Math.min(Number(hours) || 24, 720));
-            // 7 days at 60s intervals is ~10k rows. Bumping the cap so the 7d
-            // view actually covers 7 days; we also down-sample on the client
-            // if needed (chart.js handles ~20k points fine).
+
+            // First, see if this is a PRTG monitor we can query directly
+            const monitor = await R.findOne("monitor", "id = ?", [ monitorID ]);
+            if (monitor && monitor.type === "prtg" && monitor.prtg_server_id && monitor.prtg_sensor_id) {
+                try {
+                    const points = await fetchPrtgHistory(monitor, h);
+                    if (points && points.length) {
+                        callback({ ok: true, points, source: "prtg" });
+                        return;
+                    }
+                } catch (e) {
+                    log.warn("channels", `PRTG history fetch failed for monitor ${monitorID}, falling back to local: ${e.message}`);
+                }
+            }
+
+            // Fallback: local heartbeat table (works for non-PRTG types
+            // and serves as a safety net if PRTG is unreachable)
             const rows = await R.getAll(
                 `SELECT time, channels, ping FROM heartbeat
                  WHERE monitor_id = ? AND channels IS NOT NULL AND time >= datetime('now', ?)
@@ -39,7 +129,7 @@ module.exports.channelsSocketHandler = (socket) => {
                     channels: r.channels ? JSON.parse(r.channels) : {},
                 };
             });
-            callback({ ok: true, points });
+            callback({ ok: true, points, source: "local" });
         } catch (e) {
             callback({ ok: false, msg: e.message });
         }
