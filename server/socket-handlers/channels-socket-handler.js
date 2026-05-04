@@ -53,13 +53,17 @@ async function fetchPrtgHistory(monitor, hours) {
     if (hours > 24 && hours <= 168) avg = 300;
     else if (hours > 168) avg = 3600;
 
+    log.info("channels", `[KYOSEI-PRTG-FETCH] sensor=${monitor.prtg_sensor_id} hours=${hours} avg=${avg}s start=${startDate.toISOString()} end=${endDate.toISOString()}`);
+
     const resp = await client.getHistory(monitor.prtg_sensor_id, startDate, endDate, avg);
     const rows = (resp && resp.histdata) || [];
+    log.info("channels", `[KYOSEI-PRTG-FETCH] sensor=${monitor.prtg_sensor_id} got ${rows.length} rows from PRTG`);
     if (!rows.length) return [];
 
-    // Log the first raw row once so we can see PRTG's actual response shape
-    // if the parser misses something. Logged at debug level only.
-    log.debug("channels", `PRTG history sample row (sensor ${monitor.prtg_sensor_id}): ${JSON.stringify(rows[0])}`);
+    // Log the first raw row at INFO so we can see PRTG's actual response
+    // shape if the parser misses something
+    log.info("channels", `[KYOSEI-PRTG-FETCH] sample row keys: ${Object.keys(rows[0]).join(", ")}`);
+    log.info("channels", `[KYOSEI-PRTG-FETCH] sample row JSON: ${JSON.stringify(rows[0])}`);
 
     const META_KEYS = new Set(["datetime", "datetime_raw", "coverage", "coverage_raw"]);
     const RAW_SUFFIX_RE = /^(.+?)(?:\(RAW\)|_raw)$/i;
@@ -114,29 +118,29 @@ module.exports.channelsSocketHandler = (socket) => {
             const h = Math.max(1, Math.min(Number(hours) || 24, 720));
 
             // First, see if this is a PRTG monitor we can query directly,
-            // and if the response actually yields multiple channels (single-
-            // channel/"value" responses indicate the parser missed the real
-            // channel keys — fall back to local heartbeat data instead).
+            // and if the response actually yields multiple channels.
             const monitor = await R.findOne("monitor", "id = ?", [ monitorID ]);
             if (monitor && monitor.type === "prtg" && monitor.prtg_server_id && monitor.prtg_sensor_id) {
                 try {
                     const points = await fetchPrtgHistory(monitor, h);
+                    log.info("channels", `[KYOSEI-PRTG-FETCH] monitor=${monitorID} parsed ${points.length} points`);
                     if (points && points.length) {
-                        // Sanity check: PRTG traffic sensors have multiple
-                        // named channels. If we only got 1 generic "value"
-                        // key, the response shape is one we don't handle —
-                        // fall through to local instead of showing a broken chart.
                         const sampleKeys = Object.keys(points[0].channels);
+                        log.info("channels", `[KYOSEI-PRTG-FETCH] monitor=${monitorID} extracted channel keys: ${sampleKeys.join(", ")}`);
                         const looksGeneric = sampleKeys.length === 1 && /^value$/i.test(sampleKeys[0]);
                         if (!looksGeneric) {
                             callback({ ok: true, points, source: "prtg" });
                             return;
                         }
-                        log.warn("channels", `PRTG response had only generic 'value' key for monitor ${monitorID} — falling back to local heartbeat data`);
+                        log.warn("channels", `[KYOSEI-PRTG-FETCH] monitor=${monitorID} PRTG response had only generic 'value' — falling back to local heartbeat`);
+                    } else {
+                        log.warn("channels", `[KYOSEI-PRTG-FETCH] monitor=${monitorID} parser yielded 0 points — falling back to local heartbeat`);
                     }
                 } catch (e) {
-                    log.warn("channels", `PRTG history fetch failed for monitor ${monitorID}, falling back to local: ${e.message}`);
+                    log.warn("channels", `[KYOSEI-PRTG-FETCH] monitor=${monitorID} fetch threw: ${e.message} — falling back to local`);
                 }
+            } else if (monitor && monitor.type === "prtg") {
+                log.warn("channels", `[KYOSEI-PRTG-FETCH] monitor=${monitorID} is PRTG type but missing prtg_server_id (${monitor.prtg_server_id}) or prtg_sensor_id (${monitor.prtg_sensor_id}) — using local heartbeat`);
             }
 
             // Fallback: local heartbeat table (works for non-PRTG types
