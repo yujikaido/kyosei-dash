@@ -55,23 +55,60 @@ export default {
             return [ ...keys ].sort();
         },
         series() {
-            // Kyosei Dash — TEMP: gap-break disabled to bisect the 7d truncation issue.
-            // If the chart now renders all 7 days, the gap-break code was the bug.
+            // Kyosei Dash — handle two related artifacts:
+            //   1. ORPHAN heartbeats (e.g. one stale point from before the
+            //      LXC was restarted, then a multi-day gap, then real data).
+            //      These would otherwise anchor the x-axis far in the past
+            //      and chart.js would draw a long flat connector to the
+            //      cluster of fresh points. Drop any point whose nearest
+            //      neighbor on both sides is farther than gapMs.
+            //   2. REAL data outages within the kept range — break the line
+            //      at gaps > gapMs so chart.js doesn't bridge the outage
+            //      with a misleading straight line.
             return this.channelKeys.map((k, i) => {
-                const data = [];
+                const raw = [];
                 for (const p of this.points) {
                     const v = typeof p.channels[k] === "number" ? p.channels[k] : null;
                     if (v === null) continue;
-                    data.push({ x: new Date(p.t), y: v });
+                    raw.push({ t: new Date(p.t), v });
                 }
-                /* eslint-disable-next-line no-console */
-                console.log(`[KYOSEI] series "${k}": ${data.length} points, x range ${data[0]?.x?.toISOString()} → ${data[data.length-1]?.x?.toISOString()}`);
+
+                // Median delta to set a sensible gap threshold. Floored at
+                // 1 hour so a sensor whose normal interval is e.g. 60 min
+                // doesn't have its line broken at every normal sample.
+                const deltas = [];
+                for (let n = 1; n < raw.length; n++) {
+                    deltas.push(raw[n].t - raw[n - 1].t);
+                }
+                deltas.sort((a, b) => a - b);
+                const median = deltas.length ? deltas[Math.floor(deltas.length / 2)] : 0;
+                const gapMs = Math.max(median * 5, 60 * 60 * 1000);
+
+                // Drop orphans (no neighbor within gapMs on either side)
+                const kept = raw.filter((r, idx) => {
+                    const prevGap = idx > 0 ? r.t - raw[idx - 1].t : Infinity;
+                    const nextGap = idx < raw.length - 1 ? raw[idx + 1].t - r.t : Infinity;
+                    return prevGap <= gapMs || nextGap <= gapMs;
+                });
+
+                // Break the line at remaining gaps within the kept set
+                const data = [];
+                let prevT = null;
+                for (const r of kept) {
+                    if (prevT !== null && r.t - prevT > gapMs) {
+                        data.push({ x: new Date(prevT.getTime() + 1), y: null });
+                    }
+                    data.push({ x: r.t, y: r.v });
+                    prevT = r.t;
+                }
+
                 return {
                     label: k,
                     borderColor: COLORS[i % COLORS.length],
                     backgroundColor: COLORS[i % COLORS.length] + "33",
                     fill: this.chartKind === "bandwidth",
                     data,
+                    spanGaps: false,
                     tension: 0.2,
                     borderWidth: 2,
                     pointRadius: 0,
@@ -206,18 +243,6 @@ export default {
             this.$root.getSocket().emit("getChannelHistory", this.monitorId, this.hours, (res) => {
                 if (res && res.ok) {
                     this.points = res.points || [];
-                    // Kyosei Dash temp debug — remove once 7d truncation is fixed
-                    /* eslint-disable no-console */
-                    if (this.hours >= 24) {
-                        const len = this.points.length;
-                        const oldest = len ? this.points[0].t : "(none)";
-                        const newest = len ? this.points[len - 1].t : "(none)";
-                        console.log(`[KYOSEI] monitor=${this.monitorId} hours=${this.hours} got ${len} points; oldest=${oldest} newest=${newest}`);
-                    }
-                    /* eslint-enable no-console */
-                } else {
-                    /* eslint-disable-next-line no-console */
-                    console.error("[KYOSEI] getChannelHistory failed:", res);
                 }
             });
         },
