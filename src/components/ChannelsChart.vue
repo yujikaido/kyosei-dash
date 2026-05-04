@@ -2,15 +2,25 @@
     <div>
         <div class="d-flex justify-content-between align-items-center mb-2">
             <strong>{{ title }}</strong>
-            <select v-model.number="hours" class="form-select form-select-sm w-auto" @change="load">
-                <option :value="1">1h</option>
-                <option :value="6">6h</option>
-                <option :value="24">24h</option>
-                <option :value="168">7d</option>
-            </select>
+            <div class="d-flex gap-2 align-items-center">
+                <button
+                    type="button"
+                    class="btn btn-sm btn-outline-secondary"
+                    title="Reset zoom (or double-tap the chart)"
+                    @click="resetChartZoom"
+                >
+                    <font-awesome-icon icon="search" />
+                </button>
+                <select v-model.number="hours" class="form-select form-select-sm w-auto" @change="load">
+                    <option :value="1">1h</option>
+                    <option :value="6">6h</option>
+                    <option :value="24">24h</option>
+                    <option :value="168">7d</option>
+                </select>
+            </div>
         </div>
         <div v-if="!series.length" class="text-muted small">No channel history yet.</div>
-        <Line v-else :data="chartData" :options="chartOptions" />
+        <Line v-else ref="chartRef" :data="chartData" :options="chartOptions" @dblclick="resetChartZoom" />
     </div>
 </template>
 
@@ -18,8 +28,9 @@
 import { Chart, LineController, LineElement, PointElement, LinearScale, TimeScale, Filler, Tooltip, Legend } from "chart.js";
 import "chartjs-adapter-dayjs-4";
 import { Line } from "vue-chartjs";
+import zoomPlugin from "chartjs-plugin-zoom";
 
-Chart.register(LineController, LineElement, PointElement, LinearScale, TimeScale, Filler, Tooltip, Legend);
+Chart.register(LineController, LineElement, PointElement, LinearScale, TimeScale, Filler, Tooltip, Legend, zoomPlugin);
 
 const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#14B8A6", "#F97316"];
 
@@ -44,18 +55,36 @@ export default {
             return [ ...keys ].sort();
         },
         series() {
-            return this.channelKeys.map((k, i) => ({
-                label: k,
-                borderColor: COLORS[i % COLORS.length],
-                backgroundColor: COLORS[i % COLORS.length] + "33",
-                fill: this.chartKind === "bandwidth",
-                data: this.points
-                    .map((p) => ({ x: new Date(p.t), y: typeof p.channels[k] === "number" ? p.channels[k] : null }))
-                    .filter((d) => d.y !== null),
-                tension: 0.2,
-                borderWidth: 2,
-                pointRadius: 0,
-            }));
+            // Kyosei Dash — break the line at large time gaps so an old orphan
+            // heartbeat doesn't draw a flat 5-day connector to the recent data.
+            // Threshold: 30 minutes between consecutive points = "gap".
+            const GAP_MS = 30 * 60 * 1000;
+            return this.channelKeys.map((k, i) => {
+                const data = [];
+                let prevT = null;
+                for (const p of this.points) {
+                    const v = typeof p.channels[k] === "number" ? p.channels[k] : null;
+                    if (v === null) continue;
+                    const t = new Date(p.t);
+                    if (prevT !== null && t - prevT > GAP_MS) {
+                        // Insert null between distant points to break the line
+                        data.push({ x: new Date(prevT.getTime() + 1), y: null });
+                    }
+                    data.push({ x: t, y: v });
+                    prevT = t;
+                }
+                return {
+                    label: k,
+                    borderColor: COLORS[i % COLORS.length],
+                    backgroundColor: COLORS[i % COLORS.length] + "33",
+                    fill: this.chartKind === "bandwidth",
+                    data,
+                    spanGaps: false,
+                    tension: 0.2,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                };
+            });
         },
         chartKind() {
             const ks = this.channelKeys.map((k) => k.toLowerCase());
@@ -146,6 +175,23 @@ export default {
                             },
                         } : {},
                     },
+                    // Kyosei Dash — wheel + pinch + drag-to-zoom
+                    zoom: {
+                        zoom: {
+                            wheel: { enabled: true, modifierKey: null },
+                            pinch: { enabled: true },
+                            drag: { enabled: true, backgroundColor: "rgba(59, 130, 246, 0.2)", borderColor: "#3B82F6", borderWidth: 1, threshold: 8 },
+                            mode: "x",
+                        },
+                        pan: {
+                            enabled: true,
+                            mode: "x",
+                            modifierKey: "shift",
+                        },
+                        limits: {
+                            x: { minRange: 60 * 1000 }, // can't zoom in tighter than 1 minute
+                        },
+                    },
                 },
             };
         },
@@ -154,6 +200,16 @@ export default {
         this.load();
     },
     methods: {
+        /**
+         * Kyosei Dash — reset zoom to full window. Triggered by the toolbar
+         * button OR by double-clicking/double-tapping the chart canvas.
+         */
+        resetChartZoom() {
+            const ref = this.$refs.chartRef;
+            const inst = ref && (ref.chart || (ref.$refs && ref.$refs.chart) || ref);
+            if (inst && typeof inst.resetZoom === "function") inst.resetZoom();
+            else if (ref && ref.chart && typeof ref.chart.resetZoom === "function") ref.chart.resetZoom();
+        },
         load() {
             this.$root.getSocket().emit("getChannelHistory", this.monitorId, this.hours, (res) => {
                 if (res && res.ok) {

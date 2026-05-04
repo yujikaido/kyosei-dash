@@ -25,9 +25,12 @@ RUN apt-get update && \
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
 
-# Install all deps (dev included — we need Vite for the frontend build)
+# Install all deps (dev included — we need Vite for the frontend build).
+# Using `npm install` (not `npm ci`) so adding a new dep just requires
+# bumping package.json on the laptop — no need to regenerate lock locally
+# (laptop can't compile native deps like @louislam/sqlite3 on Windows ARM).
 COPY .npmrc package.json package-lock.json ./
-RUN npm ci
+RUN npm install --no-audit --no-fund
 
 # Copy full source and build the Vue frontend to ./dist
 COPY . .
