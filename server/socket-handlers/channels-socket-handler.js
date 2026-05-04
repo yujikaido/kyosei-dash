@@ -88,46 +88,60 @@ function parsePrtgHistoryCsv(csv) {
     if (lines.length < 2) return [];
 
     const header = parseCsvRow(lines[0]);
-    // Identify columns. Convention: a numeric "raw" companion appears
-    // either named "<channel>(RAW)" or "<channel>(SPEED)(RAW)" or with
-    // suffix "_raw". The display column is the same name minus that suffix.
-    // We map raw-column-index -> friendly channel name.
-    const dateIdx = header.findIndex((h) => /date/i.test(h) && /time/i.test(h));
+    // Identify the date column (display) and any date-related raw companion
+    // so we skip them entirely. PRTG includes "Date Time" + "Date Time(RAW)".
+    const isDateColumn = (h) => /^date\s*time/i.test(h) || /^date$/i.test(h) || /^time$/i.test(h);
+    // Skip these as well — PRTG metadata, not real channels:
+    const isMetaColumn = (h) => /coverage/i.test(h);
+    // Volume channels are cumulative byte counters and ruin a rate chart's
+    // y-axis (huge values that swamp the actual kbit/s lines). Drop them.
+    const isVolumeColumn = (h) => /\(\s*Volume\s*\)/i.test(h);
+
     const channelCols = []; // { idx, name }
     const skipSet = new Set();
+    // Pre-mark indices we never want to touch
     for (let i = 0; i < header.length; i++) {
-        if (i === dateIdx) continue;
         const h = header[i];
-        if (/coverage/i.test(h)) { skipSet.add(i); continue; }
+        if (isDateColumn(h) || isMetaColumn(h) || isVolumeColumn(h)) skipSet.add(i);
+    }
+    // Pass 1: prefer "(RAW)" / "_raw" numeric companions
+    for (let i = 0; i < header.length; i++) {
+        if (skipSet.has(i)) continue;
+        const h = header[i];
         const rawMatch = /^(.+?)\s*(?:\(RAW\)|_raw)\s*$/i.exec(h);
         if (rawMatch) {
-            // Strip "(SPEED)" / " - Avg" / " - Sum" / " - Min" / " - Max"
-            // tags from the channel name to get the friendly label
             let name = rawMatch[1]
                 .replace(/\(SPEED\)/gi, "")
                 .replace(/\s*-\s*(Avg|Sum|Min|Max)\b/gi, "")
                 .trim();
+            // Re-check filters against the friendly name in case the (RAW)
+            // suffix hid them above
+            if (isDateColumn(name) || isVolumeColumn(name)) continue;
             channelCols.push({ idx: i, name });
             skipSet.add(i);
         }
     }
-    // For columns that have NO raw companion but are numeric display values,
-    // accept them too. Detect by sampling the first data row.
-    if (channelCols.length === 0 && lines.length > 1) {
+    // Pass 2: any remaining display column that's numeric becomes a channel
+    if (lines.length > 1) {
         const sample = parseCsvRow(lines[1]);
         for (let i = 0; i < header.length; i++) {
-            if (i === dateIdx || skipSet.has(i)) continue;
-            const num = Number(String(sample[i] ?? "").replace(/[,"\s]/g, "").replace(/[a-zA-Z%/]+$/, ""));
+            if (skipSet.has(i)) continue;
+            // Skip if a RAW companion for this name was already captured
+            const baseName = header[i]
+                .replace(/\([^)]*\)/g, "")
+                .replace(/\s*-\s*(Avg|Sum|Min|Max)\b/gi, "")
+                .trim();
+            if (channelCols.some((c) => c.name === baseName)) continue;
+            const num = Number(String(sample[i] ?? "").replace(/,/g, "").replace(/[a-zA-Z%/\s]+$/, ""));
             if (!isNaN(num) && isFinite(num)) {
-                let name = header[i]
-                    .replace(/\([^)]*\)/g, "")
-                    .replace(/\s*-\s*(Avg|Sum|Min|Max)\b/gi, "")
-                    .trim();
-                channelCols.push({ idx: i, name, fromDisplay: true });
+                channelCols.push({ idx: i, name: baseName, fromDisplay: true });
             }
         }
     }
     if (channelCols.length === 0) return [];
+
+    // dateIdx for the row loop below
+    const dateIdx = header.findIndex(isDateColumn);
 
     const points = [];
     for (let r = 1; r < lines.length; r++) {
