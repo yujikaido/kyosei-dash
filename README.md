@@ -21,7 +21,7 @@ Kyosei Dash (共生 — *kyōsei*, "living together") is a self-hosted monitorin
 
 ## 🚀 Installation
 
-### Option 1: Proxmox LXC (Automated — recommended)
+### Option 1: Proxmox LXC (Automated — recommended) (This only installs Kyosei-Dash PRTG is a sepereate intall and setup)
 
 For anyone running Proxmox VE, deploy a fully configured **Debian 13 LXC** running Docker with a single command on your Proxmox host shell:
 
