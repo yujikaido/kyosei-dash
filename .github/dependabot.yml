@@ -1,0 +1,43 @@
+# Kyosei Dash — automated dependency vulnerability patches.
+#
+# Dependabot opens a PR whenever a dependency has a security advisory or a
+# newer version. You review the diff, merge, then cut a release tag — the
+# LXC only deploys tagged releases, so nothing auto-runs in production.
+#
+# This is how Kyosei stays patched WITHOUT waiting on upstream Uptime Kuma
+# to bump its own dependencies.
+version: 2
+updates:
+  # npm — the big one. Kuma's tree is large; security-only keeps noise down.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+    # Security updates always come through; version bumps grouped to reduce PR spam
+    groups:
+      non-security-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Docker base image (node:22-bookworm-slim) — picks up rebased CVE fixes
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "docker"
+
+  # GitHub Actions, if/when any are added
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

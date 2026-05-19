@@ -67,6 +67,7 @@ Inside the LXC, `update` opens an interactive menu:
 | **Prune Docker** | frees space, never touches volumes |
 | **Backup data** | tars `data/` (SQLite + uploads + PRTG registry); keeps last 14 |
 | **Restore data** | stop → replace `data/` → rebuild (latest backup if unspecified) |
+| **Vuln scan** | `npm audit` inside the container + Docker base-image age |
 
 Headless / cron usage works too — `update apply`, `update backup /mnt/nas`, `update health`, `update help`.
 
@@ -87,6 +88,29 @@ update apply        # checks out the highest vX.Y.Z tag, rebuilds
 
 Bleeding-edge (untagged `main`) is opt-in and **not recommended for
 production**: `KYOSEI_TRACK=main update apply` or `update apply --main`.
+
+### 🛡️ Staying patched (without waiting on upstream Kuma)
+
+Kyosei is a fork — it does **not** receive upstream Uptime Kuma updates
+automatically. You own patching. Four layers, all self-serviceable:
+
+| Layer | Patch it with |
+|---|---|
+| LXC OS (Debian libs, openssl) | `update os` (offers unattended-upgrades) |
+| Docker base image (`node:22-bookworm-slim`) | `update apply --hard` (rebuilds from a fresh base) |
+| npm dependencies (most CVEs) | **Dependabot** PRs → review → tag a release → `update apply` |
+| Kuma's own app code | Watch [Kuma security advisories](https://github.com/louislam/uptime-kuma/security); port fixes when relevant (rare) |
+
+`.github/dependabot.yml` is committed — enable Dependabot in your repo
+settings (Settings → Code security → Dependabot). It opens weekly PRs for
+vulnerable/outdated npm + Docker deps. Because the Dockerfile uses
+`npm install` (not `npm ci`), every `update apply` rebuild already pulls
+in-range dependency patches automatically; Dependabot covers the bumps that
+need a version-range change.
+
+Check status anytime from the LXC: **`update audit`** runs `npm audit` in
+the container and reports the base-image age. Suggested cadence: `update os`
++ `update apply --hard` monthly, merge Dependabot security PRs as they land.
 
 ---
 

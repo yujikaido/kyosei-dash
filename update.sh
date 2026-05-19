@@ -385,6 +385,32 @@ cmd_restore() {
   ok "Restored. Give it ~30s, then check: update health"
 }
 
+cmd_audit() {
+  hdr "Dependency vulnerability scan (npm audit)"
+  echo "Scans the running container's npm tree for known CVEs."
+  echo "Fixes land via Dependabot PRs on GitHub -> review -> tag a release."
+  echo
+  local svc
+  svc=$(docker compose config --services 2>/dev/null | head -1)
+  [[ -z "$svc" ]] && { err "No service found"; return 1; }
+  if docker compose exec -T "$svc" sh -c 'cd /app && npm audit --omit=dev 2>/dev/null'; then
+    ok "No known vulnerabilities in production dependencies."
+  else
+    echo
+    warn "Vulnerabilities reported above."
+    echo "  - Security fixes: merge the Dependabot PR(s) on GitHub, then"
+    echo "    'git tag vX.Y.Z && git push --tags' and run 'update apply' here."
+    echo "  - Base-image CVEs: run 'update apply --hard' (rebuilds FROM a"
+    echo "    fresh node:22-bookworm-slim)."
+    echo "  - OS libs: run 'update os'."
+  fi
+  echo
+  hdr "Docker base image age"
+  docker image inspect "$(docker compose images -q "$svc" 2>/dev/null | head -1)" \
+    --format '  Image created: {{.Created}}' 2>/dev/null || true
+  echo "  (Stale base image = unpatched system libs. 'update apply --hard' refreshes it.)"
+}
+
 cmd_shell() {
   local svc="${1:-}"
   [[ -z "$svc" ]] && svc=$(pick_service "Open shell in which service?" 0)
@@ -415,6 +441,7 @@ ${C_BOLD}$APP_NAME -- operator console${C_RESET}
   ${C_CYAN}update health${C_RESET}                port + web UI + recent errors
   ${C_CYAN}update backup${C_RESET} [path]         tar of data/ (SQLite + uploads + config)
   ${C_CYAN}update restore${C_RESET} [file]        restore data/ from a backup (latest if omitted)
+  ${C_CYAN}update audit${C_RESET}                 npm audit + base-image age (CVE check)
   ${C_CYAN}update shell${C_RESET} [service]       shell into a container
   ${C_CYAN}update help${C_RESET}                  this help
 
@@ -451,7 +478,8 @@ menu_main_whiptail() {
                       "10" "Prune Docker      (frees space - keeps data)" \
                       "11" "Backup data       (SQLite + uploads to tar.gz)" \
                       "12" "Restore data      (from a backup tar.gz)" \
-                      "13" "Web UI URL hint" \
+                      "13" "Vuln scan         (npm audit + base image age)" \
+                      "14" "Web UI URL hint" \
                       "Q"  "Quit" \
                       3>&1 1>&2 2>&3)
     rc=$?
@@ -471,7 +499,8 @@ menu_main_whiptail() {
       10) cmd_prune;          pause ;;
       11) cmd_backup;         pause ;;
       12) cmd_restore;        pause ;;
-      13)
+      13) cmd_audit;          pause ;;
+      14)
           local ip; ip=$(hostname -I | awk '{print $1}')
           whiptail --backtitle "$WT_BACKTITLE" --title "Web UI" \
                    --msgbox "Local URL: http://$ip:${APP_PORT}\n\nOr your reverse-proxy hostname if configured (e.g. https://kyosei.example.com)." \
@@ -506,8 +535,9 @@ menu_main_plain() {
   ${C_CYAN}10${C_RESET}) Prune Docker
   ${C_CYAN}11${C_RESET}) Backup data
   ${C_CYAN}12${C_RESET}) Restore data
+  ${C_CYAN}13${C_RESET}) Vuln scan (npm audit)
 
-  ${C_CYAN}13${C_RESET}) Web UI URL hint
+  ${C_CYAN}14${C_RESET}) Web UI URL hint
   ${C_CYAN} 0${C_RESET}) Quit
 
 EOF
@@ -527,7 +557,8 @@ EOF
       10) cmd_prune;          pause ;;
       11) cmd_backup;         pause ;;
       12) cmd_restore;        pause ;;
-      13)
+      13) cmd_audit;          pause ;;
+      14)
           local ip; ip=$(hostname -I | awk '{print $1}')
           echo "  Web UI: http://$ip:${APP_PORT}"
           echo "  (or your reverse proxy hostname if configured)"
@@ -567,6 +598,7 @@ main() {
     health)   cmd_health ;;
     backup)   shift; cmd_backup "${1:-}" ;;
     restore)  shift; cmd_restore "${1:-}" ;;
+    audit)    cmd_audit ;;
     shell)    shift; cmd_shell "${1:-}" ;;
     help|-h|--help) cmd_help ;;
     --hard|--no-pull) cmd_apply "$@" ;;
