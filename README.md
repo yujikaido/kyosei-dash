@@ -48,7 +48,27 @@ If you don't use Proxmox, run Kyosei Dash anywhere Docker is installed.
 * **Smart Defaults** — auto-picks the next free CTID, auto-detects the latest Debian 13 template, falls back to Debian 12 if 13 is unavailable.
 * **Unprivileged LXC** — deploys as a secure unprivileged container with `nesting=1` + `keyctl=1` (exactly what Docker-in-LXC needs, nothing more).
 * **Credentials stay server-side** — the browser only sees `{ hasPasshash: bool }` flags; PRTG passwords and API tokens never leave the container.
-* **Zero-config `update` alias** — inside the LXC, type `update` to apt-upgrade the OS, pull the latest code, and rebuild Docker in one command.
+* **Operator console** — inside the LXC, type `update` for a whiptail menu (Proxmox-helper style): apply updates, OS patch, logs, restart, health check, disk usage, Docker prune, **backup & restore the data dir**, and a container shell. Also scriptable: `update apply`, `update backup`, `update health`, etc.
+
+---
+
+## 🛠️ Operator console (`update`)
+
+Inside the LXC, `update` opens an interactive menu:
+
+| Action | What it does |
+|---|---|
+| **Apply update** | git force-sync from GitHub → rebuild → restart → waits for `:3001` |
+| **Hard update** | same, but also pulls a fresh base image (CVE patches) |
+| **OS update** | `apt full-upgrade` the container + optional unattended-upgrades |
+| **Status / Logs / Restart / Shell** | docker compose helpers with a service picker |
+| **Health check** | port + HTTP probe + recent error log lines |
+| **Disk & storage** | host `df`, Docker usage, `data/` + `kuma.db` size |
+| **Prune Docker** | frees space, never touches volumes |
+| **Backup data** | tars `data/` (SQLite + uploads + PRTG registry); keeps last 14 |
+| **Restore data** | stop → replace `data/` → rebuild (latest backup if unspecified) |
+
+Headless / cron usage works too — `update apply`, `update backup /mnt/nas`, `update health`, `update help`.
 
 ---
 
@@ -110,7 +130,7 @@ Once installed, Kyosei Dash is at `http://<lxc-ip>:3001`.
 - RDP `.reg` handler bundled at `/handlers/rdp-handler.reg`
 - Newly imported monitors auto-start polling (no pause/resume needed)
 - Times rendered in browser-local timezone (server stores UTC, serializes ISO)
-- Proxmox LXC installer with `update` alias for one-shot upgrades
+- Proxmox LXC installer + `update` operator console (apply / backup / restore / health / logs)
 
 ## 🚧 Known limits
 
