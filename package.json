@@ -56,7 +56,7 @@
         "compare-versions": "~3.6.0",
         "compression": "~1.8.1",
         "country-flag-emoji-polyfill": "~0.1.8",
-        "croner": "~8.1.2",
+        "croner": "~10.0.1",
         "dayjs": "~1.11.19",
         "dev-null": "~0.1.1",
         "dotenv": "~16.0.3",
