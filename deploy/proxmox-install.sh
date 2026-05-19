@@ -170,19 +170,12 @@ cd '$APP_DIR'
 echo '--> building + starting stack'
 docker compose up -d --build
 
-echo '--> installing quick-update alias'
-cat > /usr/local/bin/update <<'UPD'
+echo '--> installing operator console (update command)'
+chmod +x '$APP_DIR/update.sh' 2>/dev/null || true
+apt-get install -y -qq whiptail 2>/dev/null || true
+cat > /usr/local/bin/update <<UPD
 #!/bin/bash
-set -e
-export DEBIAN_FRONTEND=noninteractive
-echo '==> apt update + upgrade'
-apt-get update -qq && apt-get upgrade -y -qq
-echo '==> git pull'
-cd $APP_DIR
-git pull
-echo '==> docker compose rebuild'
-docker compose up -d --build
-echo '==> done.'
+exec '$APP_DIR/update.sh' \"\\\$@\"
 UPD
 chmod +x /usr/local/bin/update
 
