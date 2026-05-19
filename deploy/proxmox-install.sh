@@ -162,10 +162,20 @@ echo '--> installing Docker CE'
 curl -fsSL https://get.docker.com | sh
 systemctl enable --now docker
 
-echo '--> cloning $REPO_URL (branch $REPO_BRANCH)'
+echo '--> cloning $REPO_URL'
 rm -rf '$APP_DIR'
-git clone --depth 1 --branch '$REPO_BRANCH' '$REPO_URL' '$APP_DIR'
+git clone '$REPO_URL' '$APP_DIR'
 cd '$APP_DIR'
+# SECURITY: deploy the latest *tagged release*, not raw main. A human must
+# deliberately tag a reviewed commit for it to land on a production node.
+LATEST_TAG=\$(git tag -l 'v*' --sort=-v:refname | head -1)
+if [ -n \"\$LATEST_TAG\" ]; then
+    echo \"--> checking out release \$LATEST_TAG\"
+    git checkout --quiet \"\$LATEST_TAG\"
+else
+    echo '--> WARNING: no version tags found; staying on default branch (main)'
+    echo '    Tag a release on your dev box: git tag v1.0.0 && git push --tags'
+fi
 
 echo '--> building + starting stack'
 docker compose up -d --build

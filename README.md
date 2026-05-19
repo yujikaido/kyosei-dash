@@ -58,7 +58,7 @@ Inside the LXC, `update` opens an interactive menu:
 
 | Action | What it does |
 |---|---|
-| **Apply update** | git force-sync from GitHub → rebuild → restart → waits for `:3001` |
+| **Apply update** | deploys the **latest `vX.Y.Z` git tag** → rebuild → restart → waits for `:3001` |
 | **Hard update** | same, but also pulls a fresh base image (CVE patches) |
 | **OS update** | `apt full-upgrade` the container + optional unattended-upgrades |
 | **Status / Logs / Restart / Shell** | docker compose helpers with a service picker |
@@ -69,6 +69,24 @@ Inside the LXC, `update` opens an interactive menu:
 | **Restore data** | stop → replace `data/` → rebuild (latest backup if unspecified) |
 
 Headless / cron usage works too — `update apply`, `update backup /mnt/nas`, `update health`, `update help`.
+
+### 🔐 Release model
+
+`update apply` only ever deploys a **tagged release** — never raw `main`. A
+human deliberately tags a reviewed commit; production nodes can't auto-run an
+unreviewed or malicious push to `main`.
+
+```bash
+# On your dev machine, when a commit is reviewed & ready:
+git tag v1.0.1
+git push --tags
+
+# On the LXC:
+update apply        # checks out the highest vX.Y.Z tag, rebuilds
+```
+
+Bleeding-edge (untagged `main`) is opt-in and **not recommended for
+production**: `KYOSEI_TRACK=main update apply` or `update apply --main`.
 
 ---
 

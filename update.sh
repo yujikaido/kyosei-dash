@@ -122,24 +122,40 @@ cmd_apply() {
     if [[ ! -d .git ]]; then
       warn "Not a git checkout -- skipping git sync."
     else
-      # This is a DEPLOY TARGET, not a dev box. GitHub is the single source of
-      # truth -- force-match it instead of merging. Any on-box drift self-heals
-      # every run. The bind-mounted data/ dir is gitignored and never touched.
-      local old new branch
-      branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)
-      [[ "$branch" == "HEAD" || -z "$branch" ]] && branch=main
+      # SECURITY: this is a production deploy target. By default we only ever
+      # deploy *tagged releases*, never raw `main`. That means an unreviewed
+      # or malicious commit pushed to main does NOT auto-run here -- a human
+      # has to deliberately `git tag vX.Y.Z` a reviewed commit. Set
+      # KYOSEI_TRACK=main (or pass --main) to opt into bleeding-edge main.
+      local old new target track
+      track="${KYOSEI_TRACK:-tag}"
+      for a in "$@"; do [[ "$a" == "--main" ]] && track="main"; done
       old=$(git rev-parse HEAD 2>/dev/null || echo "")
-      if ! git fetch --quiet origin "$branch"; then
+      if ! git fetch --quiet --tags --force origin; then
         err "git fetch failed -- check network / repo URL"
         return 1
       fi
-      git reset --hard "origin/$branch" >/dev/null 2>&1 || { err "git reset failed"; return 1; }
+      if [[ "$track" == "main" ]]; then
+        warn "KYOSEI_TRACK=main -- deploying un-tagged HEAD of main (NOT recommended for production)"
+        target="origin/main"
+      else
+        # Latest semver-ish tag (v1.2.3, v1.2.3-beta, ...), highest version wins
+        target=$(git tag -l 'v*' --sort=-v:refname | head -1)
+        if [[ -z "$target" ]]; then
+          err "No version tags found in the repo."
+          err "On your dev machine: git tag v1.0.0 && git push --tags"
+          err "(Or run with --main to deploy untagged main, not recommended.)"
+          return 1
+        fi
+        log "Latest release tag: $target"
+      fi
+      git reset --hard "$target" >/dev/null 2>&1 || { err "git reset to $target failed"; return 1; }
       chmod +x "$INSTALL_DIR"/deploy/*.sh "$INSTALL_DIR"/update.sh 2>/dev/null || true
       new=$(git rev-parse HEAD 2>/dev/null || echo "")
       if [[ "$old" == "$new" ]]; then
-        log "Already up to date -- no code changes."
+        log "Already on $target -- no code changes."
       else
-        log "Synced $(git rev-parse --short "$old") -> $(git rev-parse --short "$new")"
+        log "Deployed $target ($(git rev-parse --short "$old") -> $(git rev-parse --short "$new"))"
         echo
         printf "%sChanged files:%s\n" "$C_BOLD" "$C_RESET"
         git diff --stat "$old..$new" | sed 's/^/  /'
@@ -387,7 +403,9 @@ cmd_help() {
 ${C_BOLD}$APP_NAME -- operator console${C_RESET}
 
   ${C_CYAN}update${C_RESET}                       interactive whiptail menu
-  ${C_CYAN}update apply${C_RESET} [--hard]        pull, rebuild, restart (--hard also patches base-image CVEs)
+  ${C_CYAN}update apply${C_RESET} [--hard] [--main] deploy latest tagged release, rebuild, restart
+                               (--hard also patches base-image CVEs;
+                                --main deploys untagged main -- NOT for production)
   ${C_CYAN}update os${C_RESET}                    apt update/upgrade the LXC + offer auto-patching
   ${C_CYAN}update status${C_RESET}                docker compose ps
   ${C_CYAN}update logs${C_RESET} [service]        tail logs (picker if omitted)
@@ -399,6 +417,11 @@ ${C_BOLD}$APP_NAME -- operator console${C_RESET}
   ${C_CYAN}update restore${C_RESET} [file]        restore data/ from a backup (latest if omitted)
   ${C_CYAN}update shell${C_RESET} [service]       shell into a container
   ${C_CYAN}update help${C_RESET}                  this help
+
+${C_BOLD}Release model:${C_RESET} ${C_DIM}'apply' deploys the highest 'vX.Y.Z' git tag.
+  Cut a release from your dev machine:  git tag v1.0.1 && git push --tags
+  Then on the LXC:  update apply
+  Bleeding edge (NOT for prod):  KYOSEI_TRACK=main update apply  (or --main)${C_RESET}
 
 ${C_DIM}Old flags still work:${C_RESET}
   ${C_DIM}update --hard${C_RESET}    = update apply --hard
