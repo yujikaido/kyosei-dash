@@ -1,0 +1,20 @@
+# Kyosei Dash — force LF on files that run on Linux, regardless of the
+# committer's OS. Without this, scripts edited on Windows get CRLF and
+# fail on the LXC with "bad interpreter: /usr/bin/env bash^M".
+*.sh        text eol=lf
+*.bash      text eol=lf
+Dockerfile  text eol=lf
+dockerfile  text eol=lf
+*.dockerfile text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.js        text eol=lf
+*.mjs       text eol=lf
+*.cjs       text eol=lf
+*.ts        text eol=lf
+*.vue       text eol=lf
+*.json      text eol=lf
+*.css       text eol=lf
+*.scss      text eol=lf
+*.html      text eol=lf
+*.md        text eol=lf
