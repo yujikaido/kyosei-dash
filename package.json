@@ -164,7 +164,7 @@
         "favico.js": "~0.3.10",
         "node-ssh": "~13.1.0",
         "postcss-html": "~1.8.1",
-        "postcss-rtlcss": "~5.7.1",
+        "postcss-rtlcss": "~6.0.0",
         "postcss-scss": "~4.0.9",
         "prettier": "^3.8.1",
         "prismjs": "~1.30.0",
