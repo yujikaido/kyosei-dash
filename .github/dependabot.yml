@@ -1,43 +1,66 @@
-# Kyosei Dash — automated dependency vulnerability patches.
+# Kyosei Dash — automated dependency SECURITY patches only.
 #
-# Dependabot opens a PR whenever a dependency has a security advisory or a
-# newer version. You review the diff, merge, then cut a release tag — the
-# LXC only deploys tagged releases, so nothing auto-runs in production.
+# This is a FROZEN FORK of Uptime Kuma. Kuma pins many dependencies to
+# specific versions for compatibility — blindly taking major (or even minor)
+# version bumps will break the build/runtime. So we deliberately:
 #
-# This is how Kyosei stays patched WITHOUT waiting on upstream Uptime Kuma
-# to bump its own dependencies.
+#   - let "Dependabot security updates" (enabled in repo Settings) open PRs
+#     for deps with an actual CVE, regardless of version range
+#   - IGNORE routine version-update noise (latest-major chasing) here
+#
+# Result: you only get PRs that matter (a real vuln), review the diff, merge,
+# then cut a release tag. The LXC only deploys tagged releases.
+#
+# If you ever want to deliberately chase a specific dep's latest version,
+# do it by hand in package.json — not via a flood of Dependabot PRs.
 version: 2
 updates:
-  # npm — the big one. Kuma's tree is large; security-only keeps noise down.
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
     labels:
-      - "dependencies"
+      - "security"
     commit-message:
       prefix: "deps"
-    # Security updates always come through; version bumps grouped to reduce PR spam
-    groups:
-      non-security-minor-patch:
-        applies-to: version-updates
+    # Suppress ALL routine version updates. Security-advisory PRs still come
+    # through (those are driven by "Dependabot security updates", not by
+    # version-update rules, so this ignore does not block them).
+    ignore:
+      - dependency-name: "*"
         update-types:
-          - "minor"
-          - "patch"
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
 
-  # Docker base image (node:22-bookworm-slim) — picks up rebased CVE fixes
+  # Docker base image — security only. A major Node bump (22 -> 26) can break
+  # native modules; only take it deliberately, not automatically.
   - package-ecosystem: "docker"
     directory: "/docker"
     schedule:
       interval: "weekly"
     labels:
-      - "dependencies"
+      - "security"
     commit-message:
       prefix: "docker"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
 
-  # GitHub Actions, if/when any are added
+  # GitHub Actions — security only
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
+    labels:
+      - "security"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
