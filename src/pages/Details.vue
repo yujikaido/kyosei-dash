@@ -331,7 +331,7 @@
 
             <!-- Kyosei Dash — PRTG channels chart -->
             <div v-if="monitor.type === 'prtg'" class="shadow-box big-padding mt-3">
-                <ChannelsChart :monitor-id="monitor.id" />
+                <ChannelsChart :monitor-id="monitor.id" :zoomable="false" />
             </div>
 
             <!-- Screenshot -->

@@ -20,7 +20,21 @@
             </div>
         </div>
         <div v-if="!series.length" class="text-muted small">No channel history yet.</div>
-        <Line v-else ref="chartRef" :data="chartData" :options="chartOptions" @dblclick="resetChartZoom" />
+        <template v-else>
+            <Line
+                ref="chartRef"
+                :class="{ zoomable: zoomable }"
+                :data="chartData"
+                :options="chartOptions"
+                @dblclick="resetChartZoom"
+            />
+            <!-- Kyosei Dash — passive zoom overview. The highlighted segment
+                 shrinks/grows with the wheel-zoom level; full width = full
+                 data range. Only shown where zoom is active. -->
+            <div v-if="zoomable" class="chart-overview" title="Zoom level — full bar = entire range">
+                <div class="chart-overview-window" :style="overviewStyle"></div>
+            </div>
+        </template>
     </div>
 </template>
 
@@ -38,11 +52,19 @@ export default {
     components: { Line },
     props: {
         monitorId: { type: Number, required: true },
+        // When false, wheel/pinch/drag zoom is disabled and the canvas lets
+        // page scroll through. Inline Traffic Monitor cards pass false so
+        // scrolling the dashboard doesn't accidentally zoom a small chart;
+        // the expanded modal passes true.
+        zoomable: { type: Boolean, default: true },
     },
     data() {
         return {
             hours: 24,
             points: [],
+            // Overview bar — current visible x-window (ms). null = full range.
+            viewMin: null,
+            viewMax: null,
         };
     },
     computed: {
@@ -149,6 +171,36 @@ export default {
         chartData() {
             return { datasets: this.series };
         },
+        /** Full time extent of the loaded data, in ms. null when no data. */
+        dataExtent() {
+            if (!this.points.length) return null;
+            let min = Infinity;
+            let max = -Infinity;
+            for (const p of this.points) {
+                const t = new Date(p.t).getTime();
+                if (isNaN(t)) continue;
+                if (t < min) min = t;
+                if (t > max) max = t;
+            }
+            return min <= max ? { min, max } : null;
+        },
+        /**
+         * Kyosei Dash — overview bar geometry. The highlighted segment
+         * represents the currently-visible x-window vs the full data range.
+         * Clamped 0-100% so it can never render outside the track.
+         */
+        overviewStyle() {
+            const ext = this.dataExtent;
+            if (!ext || ext.max <= ext.min) return { left: "0%", width: "100%" };
+            const span = ext.max - ext.min;
+            const vMin = this.viewMin == null ? ext.min : this.viewMin;
+            const vMax = this.viewMax == null ? ext.max : this.viewMax;
+            let left = ((vMin - ext.min) / span) * 100;
+            let width = ((vMax - vMin) / span) * 100;
+            left = Math.max(0, Math.min(100, left));
+            width = Math.max(2, Math.min(100 - left, width));
+            return { left: `${left}%`, width: `${width}%` };
+        },
         chartOptions() {
             // PRTG-style date+time labels — "4/25 4:00 PM" style across ranges.
             const isMultiDay = this.hours >= 24;
@@ -204,21 +256,29 @@ export default {
                             },
                         } : {},
                     },
-                    // Kyosei Dash — wheel + pinch + drag-to-zoom
+                    // Kyosei Dash — wheel/pinch/drag zoom. Only active when
+                    // `zoomable` (the expanded modal); inline cards leave it
+                    // off so page scroll isn't hijacked.
                     zoom: {
                         zoom: {
-                            wheel: { enabled: true, modifierKey: null },
-                            pinch: { enabled: true },
-                            drag: { enabled: true, backgroundColor: "rgba(59, 130, 246, 0.2)", borderColor: "#3B82F6", borderWidth: 1, threshold: 8 },
+                            wheel: { enabled: this.zoomable },
+                            pinch: { enabled: this.zoomable },
+                            drag: this.zoomable
+                                ? { enabled: true, backgroundColor: "rgba(59, 130, 246, 0.2)", borderColor: "#3B82F6", borderWidth: 1, threshold: 8 }
+                                : { enabled: false },
                             mode: "x",
+                            onZoomComplete: ({ chart }) => this.updateOverview(chart),
                         },
                         pan: {
-                            enabled: true,
+                            enabled: this.zoomable,
                             mode: "x",
                             modifierKey: "shift",
+                            onPanComplete: ({ chart }) => this.updateOverview(chart),
                         },
+                        // min/max 'original' clamp pan+zoom to the data extent —
+                        // the chart can never scroll past where data exists.
                         limits: {
-                            x: { minRange: 60 * 1000 }, // can't zoom in tighter than 1 minute
+                            x: { min: "original", max: "original", minRange: 60 * 1000 },
                         },
                     },
                 },
@@ -238,11 +298,29 @@ export default {
             const inst = ref && (ref.chart || (ref.$refs && ref.$refs.chart) || ref);
             if (inst && typeof inst.resetZoom === "function") inst.resetZoom();
             else if (ref && ref.chart && typeof ref.chart.resetZoom === "function") ref.chart.resetZoom();
+            // back to full window -> overview bar fills 100%
+            this.viewMin = null;
+            this.viewMax = null;
+        },
+        /**
+         * Kyosei Dash — sync the overview bar to the chart's current x-window.
+         * Called by the zoom plugin after a wheel/drag zoom or a pan.
+         * @param {object} chart chart.js instance
+         * @returns {void}
+         */
+        updateOverview(chart) {
+            const sc = chart && chart.scales && chart.scales.x;
+            if (!sc) return;
+            this.viewMin = sc.min;
+            this.viewMax = sc.max;
         },
         load() {
             this.$root.getSocket().emit("getChannelHistory", this.monitorId, this.hours, (res) => {
                 if (res && res.ok) {
                     this.points = res.points || [];
+                    // New data set -> reset the overview to the full range
+                    this.viewMin = null;
+                    this.viewMax = null;
                 }
             });
         },
@@ -253,10 +331,33 @@ export default {
 <style scoped>
 div :deep(canvas) {
     height: 260px !important;
-    /* Kyosei Dash — disable the browser's default pinch-zoom-the-whole-page
-       gesture inside the chart so chartjs-plugin-zoom can handle pinch
-       itself. pan-y still lets the user scroll the page vertically when
-       their finger touches the chart accidentally. */
+    /* Non-zoomable charts (inline cards) leave touch handling to the
+       browser so the page scrolls normally. */
+    touch-action: auto;
+}
+/* Zoomable charts (expanded modal): opt the canvas out of the browser's
+   default pinch-zoom so chartjs-plugin-zoom handles the gesture; pan-y
+   still allows vertical page scroll if a finger lands on the chart. */
+div :deep(canvas.zoomable) {
     touch-action: pan-y;
+}
+
+/* Passive zoom overview bar */
+.chart-overview {
+    position: relative;
+    height: 10px;
+    margin-top: 6px;
+    border-radius: 5px;
+    background: rgba(127, 127, 127, 0.18);
+    overflow: hidden;
+}
+.chart-overview-window {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: #3b82f6;
+    border-radius: 5px;
+    opacity: 0.55;
+    transition: left 0.15s ease, width 0.15s ease;
 }
 </style>

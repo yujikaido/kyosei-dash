@@ -81,7 +81,7 @@
                                     </button>
                                 </span>
                             </div>
-                            <ChannelsChart :monitor-id="m.id" />
+                            <ChannelsChart :monitor-id="m.id" :zoomable="false" />
                         </div>
                     </div>
                 </div>
@@ -102,7 +102,7 @@
                         </div>
                         <div class="modal-body">
                             <div v-if="expandedMonitor" class="expanded-chart">
-                                <ChannelsChart :key="`exp-${expandedMonitor.id}-${expandedKey}`" :monitor-id="expandedMonitor.id" />
+                                <ChannelsChart :key="`exp-${expandedMonitor.id}-${expandedKey}`" :monitor-id="expandedMonitor.id" :zoomable="true" />
                             </div>
                         </div>
                         <div class="modal-footer">
