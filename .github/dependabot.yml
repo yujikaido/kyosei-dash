@@ -13,6 +13,15 @@
 #
 # If you ever want to deliberately chase a specific dep's latest version,
 # do it by hand in package.json — not via a flood of Dependabot PRs.
+#
+# ACCEPTED FINDINGS (as of 2026-09-11, after the v1.0.4 dependency sweep):
+#   `npm audit --omit=dev` still reports 8 findings, ALL under the
+#   @louislam/sqlite3 -> @mapbox/node-pre-gyp install chain (tar 6, node-gyp,
+#   cacache, make-fetch-happen, @tootallnate/once). Those packages run only
+#   while `npm ci` fetches/compiles the native SQLite binary inside the Docker
+#   build stage; the server never loads them at runtime. Upstream Uptime Kuma
+#   carries the identical chain. Re-evaluate if @louislam/sqlite3 ever ships a
+#   newer node-pre-gyp.
 version: 2
 updates:
   - package-ecosystem: "npm"
