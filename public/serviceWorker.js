@@ -15,6 +15,13 @@ self.addEventListener("activate", function (event) {
     );
 });
 
+// A (pass-through) fetch handler must exist for the browser to treat this as an
+// installable PWA. We intentionally do not cache: the dashboard is realtime, so
+// requests always go to the network and we never serve stale data.
+self.addEventListener("fetch", function (event) {
+    // No event.respondWith() -> the browser handles the request normally.
+});
+
 // Receive push notifications
 self.addEventListener("push", function (event) {
     if (self.Notification?.permission !== "granted") {

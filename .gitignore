@@ -38,3 +38,11 @@ db/*.db-journal
 # Backup imports — local only, may contain sensitive cleartext credentials
 /UPKuma backup json/
 *.uptime-kuma-backup.json
+
+# TLS material — never commit private keys/certs
+/certs/
+*.key
+*.pem
+*.crt
+*.pfx
+*.p12
