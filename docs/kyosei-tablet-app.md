@@ -10,49 +10,75 @@ can do either or both.
 | Updates | Automatic (reloads from server) | Content auto-updates; rebuild APK only to change the URL |
 | Launch | Home-screen icon → Chrome shell | Home-screen icon → full-screen native shell |
 
-Both require the server to be served over **HTTPS with a SAN certificate**. A bare
-self-signed cert with only a Common Name will fail in modern Chrome
-(`ERR_CERT_COMMON_NAME_INVALID`) and silently disables the PWA. Use
-[`extra/generate-ssl-cert.ps1`](../extra/generate-ssl-cert.ps1) if your current
-cert has no SAN.
+Both require the dashboard to be reached over **HTTPS with a SAN certificate**. A
+bare self-signed cert with only a Common Name will fail in modern Chrome
+(`ERR_CERT_COMMON_NAME_INVALID`) and silently disables the PWA.
 
----
+## Architecture: TLS is terminated at Nginx Proxy Manager (NPM)
 
-## 0. Serve Kyosei Dash over HTTPS
-
-On the server PC:
-
-```powershell
-# One-time: generate a CA + SAN cert (skip if your kyoseidash.admin cert already has a SAN)
-./extra/generate-ssl-cert.ps1 -Hostname kyoseidash.admin -IpAddress 192.168.1.50
-
-# Build the frontend and run with TLS
-npm run build
-$env:SSL_KEY  = "C:\Users\yujik\projects\kyosei-dash\certs\server.key"
-$env:SSL_CERT = "C:\Users\yujik\projects\kyosei-dash\certs\server.crt"
-npm start
+```
+tablet ──HTTPS (kyoseidash.admin:443)──► Nginx Proxy Manager ──HTTP──► Kyosei Dash (node)
+                 ▲ cert lives here
 ```
 
-The server reads `SSL_KEY` / `SSL_CERT` (see [`server/config.js`](../server/config.js))
-and switches to HTTPS automatically. Default port is `3001`.
+Because NPM holds the certificate:
 
-Make sure the tablet can resolve `kyoseidash.admin` — either a DNS entry, your
-router's local DNS, or by using the LAN IP directly (that's why the cert SAN
-includes both).
+- The Kyosei Dash node server stays **plain HTTP** behind the proxy. You do **not**
+  set `SSL_KEY` / `SSL_CERT` and do **not** need `generate-ssl-cert.ps1` on the
+  server. Just `npm run build && npm start`.
+- The address for both the PWA and the APK is **`https://kyoseidash.admin`**
+  (standard port 443 — no `:3001`).
+- The cert the tablet/app must trust is the one **NPM serves**, not anything on the
+  node box.
+
+## 0. Prepare NPM
+
+1. **Enable Websockets Support** on the Kyosei Dash proxy host
+   (NPM → Hosts → Proxy Hosts → edit → **Websockets Support** = on).
+   Without it, socket.io can't connect and the dashboard never updates live.
+
+2. **Confirm the cert has a SAN** and grab the exact cert the app will pin. From any
+   machine that can reach the proxy (the server PC, or `openssl` on the tablet via
+   Termux):
+   ```bash
+   # Check SAN — must list "DNS:kyoseidash.admin"
+   echo | openssl s_client -connect kyoseidash.admin:443 -servername kyoseidash.admin 2>/dev/null \
+     | openssl x509 -noout -ext subjectAltName
+
+   # Export the served cert to a file (this is what you bundle in the APK / install for the PWA)
+   echo | openssl s_client -connect kyoseidash.admin:443 -servername kyoseidash.admin 2>/dev/null \
+     | openssl x509 -out kyosei_server.crt
+   ```
+   - If SAN is **missing**, the cert must be reissued with one. Generate a SAN cert
+     with [`extra/generate-ssl-cert.ps1`](../extra/generate-ssl-cert.ps1), then in NPM
+     → **SSL Certificates → Add → Custom** upload `server.crt` (certificate) and
+     `server.key` (key). Re-run the export command afterward.
+   - If SAN is **present**, you're set — `kyosei_server.crt` is your trust file.
+
+> You can also copy the cert straight from the NPM container instead of exporting it:
+> it lives at `/data/custom_ssl/npm-<id>/fullchain.pem` (custom) or
+> `/etc/letsencrypt/live/npm-<id>/fullchain.pem` (Let's Encrypt).
+
+Make sure the tablet can resolve `kyoseidash.admin` (router DNS, a Pi-hole/local DNS
+entry, or the tablet's hosts file). If you'd rather use the LAN IP, the cert's SAN
+must also include that IP.
 
 ---
 
 ## Part A — PWA (Chrome)
 
-1. **Trust the CA on the tablet** (needed because the cert is self-signed):
-   - Copy `certs/ca.crt` to the tablet (USB, email, or download it).
+1. **Trust the cert on the tablet** (needed because it's self-signed):
+   - Copy `kyosei_server.crt` (from step 0) to the tablet.
    - Settings → **Security and privacy** → **More security settings** →
      **Install from device storage** → **CA certificate** → **Install anyway** →
-     pick `ca.crt`.
-   - Verify under **View security certificates** → *User* tab that
-     "Kyosei Dash Local CA" is listed.
-2. On the tablet, open **Chrome** and go to `https://kyoseidash.admin:3001`
-   (or `https://192.168.1.50:3001`). The padlock should be clean — no warning.
+     pick the `.crt`.
+   - Verify under **View security certificates** → *User* tab that it's listed.
+   > Android 11+ only installs certs flagged as a CA (`basicConstraints CA:TRUE`).
+   > A plain self-signed *leaf* may refuse to install here — if so, either reissue
+   > via `generate-ssl-cert.ps1` (which makes a proper CA, install `certs/ca.crt`
+   > instead) or just use the APK path, which has no such restriction.
+2. On the tablet, open **Chrome** and go to `https://kyoseidash.admin`.
+   The padlock should be clean — no warning.
 3. Chrome menu (⋮) → **Add to Home screen** / **Install app**. The `共生` icon
    appears on the home screen and launches standalone (no address bar).
 
@@ -70,8 +96,8 @@ your other PC with Android Studio.
 
 ### Prerequisites (build PC)
 - Android Studio (Hedgehog or newer).
-- The tablet's cert chain: copy `certs/ca.crt` from the server PC.
-- Your server URL, e.g. `https://kyoseidash.admin:3001`.
+- The cert NPM serves: `kyosei_server.crt` from step 0 (or NPM's `fullchain.pem`).
+- Your server URL: `https://kyoseidash.admin`.
 
 ### Create the project
 1. Android Studio → **New Project** → **Empty Views Activity**.
@@ -135,11 +161,15 @@ device is unaffected. Add a second `<domain-config>` block if you also browse by
 </network-security-config>
 ```
 
-### The CA file
-Copy `ca.crt` to `app/src/main/res/raw/kyosei_ca.crt`
-(the resource name must be `kyosei_ca` — lowercase, no dashes).
-> If you ever rotate the server cert but re-sign it with the **same** `ca.key`,
-> the APK keeps working untouched. Only regenerating the CA requires a rebuild.
+### The cert file
+Copy the cert NPM serves to `app/src/main/res/raw/kyosei_ca.crt`
+(resource name must be `kyosei_ca` — lowercase, no dashes). Either file works as the
+trust anchor:
+- `kyosei_server.crt` (the exported leaf) — pins that exact cert; rebuild the APK
+  whenever NPM's cert is replaced.
+- `ca.crt` (if you issued the cert via `generate-ssl-cert.ps1`) — pins the CA, so
+  re-signing the leaf with the same CA needs **no** APK rebuild. Preferred if you
+  expect to rotate certs.
 
 ### `app/src/main/java/com/kyosei/dash/MainActivity.kt`
 ```kotlin
@@ -158,7 +188,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
 
     // Change this to your server. Must match a domain in network_security_config.xml.
-    private val startUrl = "https://kyoseidash.admin:3001"
+    private val startUrl = "https://kyoseidash.admin"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -238,6 +268,6 @@ only rebuild the APK to point at a different address or swap the CA.
 | Chrome: "Your connection is not private" | Cert not trusted (PWA: install `ca.crt`) or SAN doesn't match the address. Regenerate with the correct `-Hostname`/`-IpAddress`. |
 | PWA "Install app" missing | Not a secure context — fix the cert first. Confirm `/serviceWorker.js` loads with HTTP 200 over HTTPS. |
 | APK: blank / `net::ERR_CERT_AUTHORITY_INVALID` | `ca.crt` missing from `res/raw/kyosei_ca.crt`, or the domain in `network_security_config.xml` doesn't match `startUrl`. |
-| APK loads but live updates stall | socket.io needs WSS reachable on the same host/port — it is, since the WebView shares the trusted domain config. Check the server is actually on HTTPS (`Server Type: HTTPS` in logs). |
+| Dashboard loads but live updates stall (PWA or APK) | socket.io WSS is being dropped by the proxy — turn on **Websockets Support** for the proxy host in NPM. |
 | Icon looks like a plain blue square | The `共生` glyph didn't rasterize in Image Asset — re-run with `icon-512.png` from `public/`. |
 ```
