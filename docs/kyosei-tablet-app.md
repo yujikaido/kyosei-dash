@@ -1,109 +1,20 @@
-# Kyosei Dash on a Samsung tablet — PWA + WebView APK
+# Kyosei Dash tablet app (WebView APK)
 
-Two ways to run Kyosei Dash as an "app" on the tablet. They are independent; you
-can do either or both.
+A dead-simple Android app: install it, type the server address or IP, done. It
+**accepts any TLS cert** (self-signed included) and remembers the address, so there
+is nothing to export, bundle, or install on the tablet.
 
-| | **PWA (Chrome)** | **WebView APK (recommended)** |
-|---|---|---|
-| Install effort | Install from Chrome menu | Build once in Android Studio, sideload |
-| Self-signed cert | Must install the CA on the tablet (one-time Android setting) | **Bundled in the app — nothing to install on the tablet** |
-| Updates | Automatic (reloads from server) | Content auto-updates; rebuild APK only to change the URL |
-| Launch | Home-screen icon → Chrome shell | Home-screen icon → full-screen native shell |
+> Accept-any-cert is fine for a private LAN dashboard you control. Don't point this
+> app at the public internet — it won't warn you about a bad/MITM cert.
 
-Both require the dashboard to be reached over **HTTPS with a SAN certificate**. A
-bare self-signed cert with only a Common Name will fail in modern Chrome
-(`ERR_CERT_COMMON_NAME_INVALID`) and silently disables the PWA.
-
-## Architecture: TLS is terminated at Nginx Proxy Manager (NPM)
-
-```
-tablet ──HTTPS (kyoseidash.admin:443)──► Nginx Proxy Manager ──HTTP──► Kyosei Dash (node)
-                 ▲ cert lives here
-```
-
-Because NPM holds the certificate:
-
-- The Kyosei Dash node server stays **plain HTTP** behind the proxy. You do **not**
-  set `SSL_KEY` / `SSL_CERT` and do **not** need `generate-ssl-cert.ps1` on the
-  server. Just `npm run build && npm start`.
-- The address for both the PWA and the APK is **`https://kyoseidash.admin`**
-  (standard port 443 — no `:3001`).
-- The cert the tablet/app must trust is the one **NPM serves**, not anything on the
-  node box.
-
-## 0. Prepare NPM
-
-1. **Enable Websockets Support** on the Kyosei Dash proxy host
-   (NPM → Hosts → Proxy Hosts → edit → **Websockets Support** = on).
-   Without it, socket.io can't connect and the dashboard never updates live.
-
-2. **Confirm the cert has a SAN** and grab the exact cert the app will pin. From any
-   machine that can reach the proxy (the server PC, or `openssl` on the tablet via
-   Termux):
-   ```bash
-   # Check SAN — must list "DNS:kyoseidash.admin"
-   echo | openssl s_client -connect kyoseidash.admin:443 -servername kyoseidash.admin 2>/dev/null \
-     | openssl x509 -noout -ext subjectAltName
-
-   # Export the served cert to a file (this is what you bundle in the APK / install for the PWA)
-   echo | openssl s_client -connect kyoseidash.admin:443 -servername kyoseidash.admin 2>/dev/null \
-     | openssl x509 -out kyosei_server.crt
-   ```
-   - If SAN is **missing**, the cert must be reissued with one. Generate a SAN cert
-     with [`extra/generate-ssl-cert.ps1`](../extra/generate-ssl-cert.ps1), then in NPM
-     → **SSL Certificates → Add → Custom** upload `server.crt` (certificate) and
-     `server.key` (key). Re-run the export command afterward.
-   - If SAN is **present**, you're set — `kyosei_server.crt` is your trust file.
-
-> You can also copy the cert straight from the NPM container instead of exporting it:
-> it lives at `/data/custom_ssl/npm-<id>/fullchain.pem` (custom) or
-> `/etc/letsencrypt/live/npm-<id>/fullchain.pem` (Let's Encrypt).
-
-Make sure the tablet can resolve `kyoseidash.admin` (router DNS, a Pi-hole/local DNS
-entry, or the tablet's hosts file). If you'd rather use the LAN IP, the cert's SAN
-must also include that IP.
+Build it once on your build PC with Android Studio, then sideload the APK.
 
 ---
 
-## Part A — PWA (Chrome)
-
-1. **Trust the cert on the tablet** (needed because it's self-signed):
-   - Copy `kyosei_server.crt` (from step 0) to the tablet.
-   - Settings → **Security and privacy** → **More security settings** →
-     **Install from device storage** → **CA certificate** → **Install anyway** →
-     pick the `.crt`.
-   - Verify under **View security certificates** → *User* tab that it's listed.
-   > Android 11+ only installs certs flagged as a CA (`basicConstraints CA:TRUE`).
-   > A plain self-signed *leaf* may refuse to install here — if so, either reissue
-   > via `generate-ssl-cert.ps1` (which makes a proper CA, install `certs/ca.crt`
-   > instead) or just use the APK path, which has no such restriction.
-2. On the tablet, open **Chrome** and go to `https://kyoseidash.admin`.
-   The padlock should be clean — no warning.
-3. Chrome menu (⋮) → **Add to Home screen** / **Install app**. The `共生` icon
-   appears on the home screen and launches standalone (no address bar).
-
-If "Install app" doesn't appear, the service worker didn't register — that almost
-always means the cert isn't trusted (step 1) or the SAN doesn't match the address
-you typed.
-
----
-
-## Part B — WebView APK (recommended)
-
-A ~5-file Android project that wraps the dashboard in a full-screen WebView and
-trusts your cert **in the app**, so the tablet needs no CA install. Build it on
-your other PC with Android Studio.
-
-### Prerequisites (build PC)
-- Android Studio (Hedgehog or newer).
-- The cert NPM serves: `kyosei_server.crt` from step 0 (or NPM's `fullchain.pem`).
-- Your server URL: `https://kyoseidash.admin`.
-
-### Create the project
+## Create the project
 1. Android Studio → **New Project** → **Empty Views Activity**.
-2. Name: `Kyosei Dash`, package: `com.kyosei.dash`, language: **Kotlin**,
-   minimum SDK: **API 24**.
-3. Replace/create the files below.
+2. Name `Kyosei Dash`, package `com.kyosei.dash`, language **Kotlin**, min SDK **API 24**.
+3. Replace/create the four files below.
 
 ### `app/src/main/AndroidManifest.xml`
 ```xml
@@ -116,7 +27,7 @@ your other PC with Android Studio.
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="Kyosei Dash"
-        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.KyoseiDash">
 
@@ -134,140 +45,159 @@ your other PC with Android Studio.
     </application>
 </manifest>
 ```
-
-### `app/src/main/res/xml/network_security_config.xml`
-Trusts **only** your CA, and **only** for your domain(s). Everything else on the
-device is unaffected. Add a second `<domain-config>` block if you also browse by IP.
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<network-security-config>
-    <domain-config>
-        <domain includeSubdomains="true">kyoseidash.admin</domain>
-        <trust-anchors>
-            <certificates src="@raw/kyosei_ca" />
-            <certificates src="system" />
-        </trust-anchors>
-    </domain-config>
-
-    <!-- Uncomment and set your LAN IP if you launch by IP instead of hostname
-    <domain-config>
-        <domain includeSubdomains="false">192.168.1.50</domain>
-        <trust-anchors>
-            <certificates src="@raw/kyosei_ca" />
-            <certificates src="system" />
-        </trust-anchors>
-    </domain-config>
-    -->
-</network-security-config>
-```
-
-### The cert file
-Copy the cert NPM serves to `app/src/main/res/raw/kyosei_ca.crt`
-(resource name must be `kyosei_ca` — lowercase, no dashes). Either file works as the
-trust anchor:
-- `kyosei_server.crt` (the exported leaf) — pins that exact cert; rebuild the APK
-  whenever NPM's cert is replaced.
-- `ca.crt` (if you issued the cert via `generate-ssl-cert.ps1`) — pins the CA, so
-  re-signing the leaf with the same CA needs **no** APK rebuild. Preferred if you
-  expect to rotate certs.
-
-### `app/src/main/java/com/kyosei/dash/MainActivity.kt`
-```kotlin
-package com.kyosei.dash
-
-import android.annotation.SuppressLint
-import android.os.Bundle
-import android.view.View
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import androidx.activity.OnBackPressedCallback
-import androidx.appcompat.app.AppCompatActivity
-
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var webView: WebView
-
-    // Change this to your server. Must match a domain in network_security_config.xml.
-    private val startUrl = "https://kyoseidash.admin"
-
-    @SuppressLint("SetJavaScriptEnabled")
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        webView = WebView(this)
-        setContentView(webView)
-
-        // Full-screen, immersive
-        window.decorView.systemUiVisibility =
-            (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_FULLSCREEN)
-
-        webView.settings.apply {
-            javaScriptEnabled = true        // Vue app
-            domStorageEnabled = true        // localStorage / session
-            databaseEnabled = true
-            mediaPlaybackRequiresUserGesture = false
-            cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-        }
-
-        // Keep all navigation inside the WebView (socket.io/WSS works automatically)
-        webView.webViewClient = WebViewClient()
-
-        // Back button navigates web history, then exits
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (webView.canGoBack()) webView.goBack() else finish()
-            }
-        })
-
-        webView.loadUrl(startUrl)
-    }
-}
-```
+`usesCleartextTraffic="true"` lets you type a plain `http://192.168.x.x:3001`
+too, if you ever bypass the proxy.
 
 ### `app/src/main/res/values/themes.xml`
 ```xml
-<resources xmlns:tools="http://schemas.android.com/tools">
+<resources>
     <style name="Theme.KyoseiDash" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
 </resources>
 ```
 
-### Launcher icon
-Use the generated `public/icon-512.png` from this repo:
-Android Studio → right-click `res` → **New → Image Asset** → *Launcher Icons* →
-Path = `icon-512.png`. It writes all the `mipmap-*` densities for you.
+### `app/src/main/java/com/kyosei/dash/MainActivity.kt`
+```kotlin
+package com.kyosei.dash
 
-### Build + install
-```bash
-# From the Android project root, debug build (no signing needed for personal use):
-./gradlew assembleDebug
-# APK lands at app/build/outputs/apk/debug/app-debug.apk
+import android.annotation.SuppressLint
+import android.app.AlertDialog
+import android.content.Context
+import android.net.http.SslError
+import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.webkit.SslErrorHandler
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.EditText
+import android.widget.FrameLayout
+import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AppCompatActivity
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+    private val prefs by lazy { getSharedPreferences("kyosei", Context.MODE_PRIVATE) }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        webView = WebView(this)
+
+        webView.settings.apply {
+            javaScriptEnabled = true          // Vue app
+            domStorageEnabled = true          // localStorage / session
+            databaseEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+        }
+
+        webView.webViewClient = object : WebViewClient() {
+            // Accept any cert (self-signed, hostname mismatch, expired) — LAN app.
+            override fun onReceivedSslError(
+                view: WebView?, handler: SslErrorHandler?, error: SslError?
+            ) {
+                handler?.proceed()
+            }
+        }
+
+        // Full-screen WebView + a faint gear button (top-right) to change the address.
+        val root = FrameLayout(this)
+        root.addView(webView)
+        val gear = Button(this).apply {
+            text = "⚙"            // ⚙
+            alpha = 0.35f
+            setOnClickListener { askForAddress() }
+        }
+        root.addView(
+            gear,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END
+            )
+        )
+        setContentView(root)
+
+        window.decorView.systemUiVisibility =
+            (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_FULLSCREEN)
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) webView.goBack() else finish()
+            }
+        })
+
+        val saved = prefs.getString("url", null)
+        if (saved.isNullOrBlank()) askForAddress() else webView.loadUrl(saved)
+    }
+
+    /** Prompt for the server address/IP, save it, and load it. */
+    private fun askForAddress() {
+        val current = prefs.getString("url", "") ?: ""
+        val input = EditText(this).apply {
+            hint = "192.168.1.50   or   kyoseidash.admin"
+            setText(current)
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Server address")
+            .setView(input)
+            .setCancelable(current.isNotBlank())
+            .setPositiveButton("Connect") { _, _ ->
+                val url = normalize(input.text.toString())
+                prefs.edit().putString("url", url).apply()
+                webView.loadUrl(url)
+            }
+            .show()
+    }
+
+    /** Add https:// if the user didn't type a scheme. */
+    private fun normalize(raw: String): String {
+        val t = raw.trim()
+        return if (t.startsWith("http://") || t.startsWith("https://")) t else "https://$t"
+    }
+}
 ```
-Install on the tablet, either:
-- **USB:** enable Developer options → USB debugging, then `adb install app-debug.apk`, or
-- **Sideload:** copy the APK to the tablet, tap it, allow "Install unknown apps".
 
-The `共生` icon appears in the app drawer and launches straight into the dashboard,
-full-screen, with the cert already trusted.
-
-### Changing the server address later
-Edit `startUrl` in `MainActivity.kt` (and the domain in
-`network_security_config.xml` if the hostname/IP changed), then `assembleDebug`
-and reinstall. The dashboard *content* always updates live from the server — you
-only rebuild the APK to point at a different address or swap the CA.
+### Launcher icon
+Use `public/icon-512.png` from this repo: Android Studio → right-click `res` →
+**New → Image Asset** → *Launcher Icons* → Path = `icon-512.png`. It generates every
+density. (That's the only reason the icons were added — they're otherwise optional.)
 
 ---
 
-## Troubleshooting
-
-| Symptom | Cause / fix |
-|---|---|
-| Chrome: "Your connection is not private" | Cert not trusted (PWA: install `ca.crt`) or SAN doesn't match the address. Regenerate with the correct `-Hostname`/`-IpAddress`. |
-| PWA "Install app" missing | Not a secure context — fix the cert first. Confirm `/serviceWorker.js` loads with HTTP 200 over HTTPS. |
-| APK: blank / `net::ERR_CERT_AUTHORITY_INVALID` | `ca.crt` missing from `res/raw/kyosei_ca.crt`, or the domain in `network_security_config.xml` doesn't match `startUrl`. |
-| Dashboard loads but live updates stall (PWA or APK) | socket.io WSS is being dropped by the proxy — turn on **Websockets Support** for the proxy host in NPM. |
-| Icon looks like a plain blue square | The `共生` glyph didn't rasterize in Image Asset — re-run with `icon-512.png` from `public/`. |
+## Build + install
+```bash
+# From the Android project root — debug build, no signing needed for personal use
+./gradlew assembleDebug
+# APK: app/build/outputs/apk/debug/app-debug.apk
 ```
+Put it on the tablet by either:
+- **USB:** enable Developer options → USB debugging, then `adb install app-debug.apk`, or
+- **Sideload:** copy the APK over, tap it, allow "Install unknown apps".
+
+## Using it
+1. First launch → type the address: just the IP (`192.168.1.50`) or the name
+   (`kyoseidash.admin`). It prepends `https://` automatically; type the full
+   `http://...:3001` if you want plain HTTP instead.
+2. It remembers it and goes straight in next time.
+3. Tap the faint **⚙** top-right to change the address anytime.
+
+## If live updates stall
+The dashboard uses websockets (socket.io). Through Nginx Proxy Manager, turn on
+**Websockets Support** for the Kyosei proxy host (NPM → Proxy Hosts → edit →
+Websockets Support). Nothing to change in the app.
+
+---
+
+## Appendix — Chrome PWA (optional, no APK)
+The repo is also PWA-installable. In Chrome on the tablet, open the dashboard →
+menu ⋮ → **Install app**. Caveat: Chrome refuses to register the service worker on a
+self-signed cert it doesn't trust, so the PWA only works if the cert is trusted on
+the tablet. The APK above sidesteps that entirely — prefer it.
